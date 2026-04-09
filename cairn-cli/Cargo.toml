@@ -1,0 +1,12 @@
+[package]
+name = "cairn-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cairn-core = { path = "../cairn-core" }
+chrono = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }

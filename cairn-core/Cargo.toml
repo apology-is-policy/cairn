@@ -1,0 +1,16 @@
+[package]
+name = "cairn-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+surrealdb = { workspace = true }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+directories = { workspace = true }
