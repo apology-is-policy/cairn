@@ -39,24 +39,28 @@ After a few sessions, the graph is already useful. By session ten, the agent kno
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                   cairn-core                        │
-│                                                     │
-│  ops.rs ─── prime.rs ─── search.rs ─── snapshot.rs  │
-│     │                                               │
-│     └──── db.rs (SurrealDB embedded)                │
-│              │                                      │
-│              ▼                                      │
-│         cairn.db (single directory)                 │
-└──────────┬──────────────┬───────────────────────────┘
-           │              │
-    cairn-mcp        cairn-cli
-    (stdio MCP)      (shell CLI)
+                    ┌─────────────────────────────────────────┐
+                    │              cairn-core                 │
+                    │   ops · prime · search · snapshot       │
+                    │              db.rs                      │
+                    │   (SurrealDB embedded, single writer)   │
+                    └────────────────┬────────────────────────┘
+                                     │
+                              cairn-server
+                            (Unix-socket daemon,
+                             owns the DB exclusively)
+                                     │
+                  ┌──────────────────┼──────────────────┐
+                  │                  │                  │
+             cairn-mcp          cairn-cli          cairn-tui
+            (stdio MCP)         (shell CLI)      (interactive)
 ```
 
 - **cairn-core** — Rust library crate with all graph logic
 - **cairn-mcp** — MCP server binary (JSON-RPC over stdio), used by Claude Code
 - **cairn-cli** — CLI binary, used by you and by hook scripts
+- **cairn-server** — single-writer daemon that owns the DB and serves all clients over a Unix socket (auto-spawned by clients on first use)
+- **cairn-tui** — interactive terminal UI for browsing the graph
 - **SurrealDB embedded** — in-process database, no server, no network, single artifact on disk
 
 ## Setup
@@ -69,23 +73,34 @@ cd cairn
 ./install.sh
 ```
 
-`install.sh` builds the release binaries and copies `cairn-cli` and `cairn-mcp` to `~/.local/bin/`. If that directory isn't on your `PATH`, the script tells you how to add it.
+`install.sh` builds the release binaries and copies `cairn-cli`, `cairn-mcp`, `cairn-server`, and `cairn-tui` to `~/.local/bin/`, then installs the hook scripts to `~/.cairn/hooks/`. If `~/.local/bin/` isn't on your `PATH`, the script tells you how to add it.
 
 If you'd rather install manually:
 
 ```bash
 cargo build --release
-cp target/release/cairn-cli target/release/cairn-mcp ~/.local/bin/
+cp target/release/cairn-{cli,mcp,server,tui} ~/.local/bin/
 ```
 
 ### Initialize your graph
+
+A Cairn graph belongs to a specific project tree. From the **root of the repo** you want to track, run:
 
 ```bash
 cairn-cli init --voice "I'm a backend engineer who values explicit error handling. \
 I prefer composition over inheritance. When in doubt, write a comment explaining WHY."
 ```
 
-This creates `~/.cairn/` with the database, hooks directory, and logs directory.
+This creates `./.cairn/` in the current directory with the database inside. From then on, every Cairn binary invoked anywhere inside that tree (`cairn-cli`, `cairn-mcp`, `cairn-tui`, the hook scripts) walks up from `cwd` looking for `.cairn/` — same way `git` finds `.git/` — and connects to it automatically. No `--db` flag, no environment variable.
+
+Cairn deliberately does **not** fall back to `~/.cairn/cairn.db`. If you want a global graph that follows you across projects, opt in explicitly:
+
+```bash
+export CAIRN_DB="$HOME/.cairn/cairn.db"
+cairn-cli --db "$CAIRN_DB" init
+```
+
+Most things you care about — snapshots, hooks, logs — live next to the database under `.cairn/` in the project, not in your home directory.
 
 ### Bootstrap the initial taxonomy (optional)
 
@@ -139,12 +154,14 @@ Run it with `/agents/taxonomer-verify`. It produces a report grouped by issue ty
 Register the MCP server so Claude Code can use the graph tools:
 
 ```bash
-claude mcp add cairn -- cairn-mcp --db ~/.cairn/cairn.db
+claude mcp add cairn -- cairn-mcp
 ```
+
+`cairn-mcp` discovers the database the same way the CLI does — it walks up from Claude Code's working directory until it finds `.cairn/`. So one MCP registration works for every project that has a Cairn graph; nothing is hardcoded to a single path. Pass `--db /absolute/path` only if you want to pin a specific graph (e.g., for a global/home graph).
 
 ### Install hooks (optional but recommended)
 
-`install.sh` already installed the hook scripts to `~/.cairn/hooks/`. To wire them into Claude Code, add the following to `.claude/settings.json` (project-level) or `~/.claude/settings.json` (user-level):
+`install.sh` already installed the hook scripts to `~/.cairn/hooks/`. To wire them into Claude Code, add the following to `~/.claude/settings.json` (user-level) — one entry covers every project:
 
 ```json
 {
@@ -155,7 +172,7 @@ claude mcp add cairn -- cairn-mcp --db ~/.cairn/cairn.db
         "hooks": [
           {
             "type": "command",
-            "command": "CAIRN_DB=$HOME/.cairn/cairn.db $HOME/.cairn/hooks/cairn_save_hook.sh"
+            "command": "$HOME/.cairn/hooks/cairn_save_hook.sh"
           }
         ]
       }
@@ -166,7 +183,7 @@ claude mcp add cairn -- cairn-mcp --db ~/.cairn/cairn.db
         "hooks": [
           {
             "type": "command",
-            "command": "CAIRN_DB=$HOME/.cairn/cairn.db $HOME/.cairn/hooks/cairn_precompact_hook.sh"
+            "command": "$HOME/.cairn/hooks/cairn_precompact_hook.sh"
           }
         ]
       }
@@ -177,12 +194,12 @@ claude mcp add cairn -- cairn-mcp --db ~/.cairn/cairn.db
 
 The hook scripts:
 - Locate `cairn-cli` automatically (PATH lookup or fallback to `~/.local/bin/cairn-cli`)
+- Walk up from `$PWD` looking for a `.cairn/` directory and use the graph they find. **If no `.cairn/` exists in any ancestor, the hook exits silently** — so a Stop hook firing in a non-Cairn repo never accidentally creates an empty graph in your home directory
 - Generate session IDs with consistent formatting
-- Exit gracefully if the database doesn't exist (so you can drop them in before initializing)
-- Redirect errors to `~/.cairn/logs/hook.log` so they never pollute Claude Code's UI
+- Redirect errors to `$HOME/.cairn/logs/hook.log` so they never pollute Claude Code's UI
 - Use `|| true` so a failed checkpoint never blocks the agent
 
-For a project-specific database, change `CAIRN_DB` to its absolute path. To override the binary location, set `CAIRN_CLI=/path/to/cairn-cli`.
+To pin the hooks to a specific graph regardless of cwd, set `CAIRN_DB=/absolute/path/to/cairn.db` in the hook command. To override the binary location, set `CAIRN_CLI=/path/to/cairn-cli`.
 
 ### Updating Cairn
 
@@ -213,7 +230,7 @@ Binary:
   cairn-cli version: 0.1.0
   schema support:    v1
 
-Database (~/.cairn/cairn.db):
+Database (./.cairn/cairn.db):
   schema version:    v1
   status:            OK
 
@@ -447,16 +464,23 @@ cairn-cli stats --json
 
 ## Data location
 
+A Cairn graph lives **inside the project tree**, next to the code it describes:
+
 ```
-~/.cairn/
-├── cairn.db/          # SurrealDB data (the single artifact)
-├── snapshots/         # Named backups
-│   └── manifest.json  # Snapshot index
-├── hooks/             # Hook scripts
-└── logs/              # Hook and server logs
+<repo-root>/
+└── .cairn/
+    ├── cairn.db/          # SurrealDB data (the single artifact)
+    ├── cairn.sock         # Unix socket — daemon ↔ clients
+    ├── .cairn.db.lock     # Single-writer flock
+    └── snapshots/         # Named backups
+        └── manifest.json  # Snapshot index
 ```
 
-The database path is configurable via `--db` flag or `CAIRN_DB` environment variable.
+Hook logs and the daemon log still go under `~/.cairn/logs/` because they're not tied to a specific graph.
+
+Every Cairn binary discovers the database by walking up from the current working directory looking for a `.cairn/` directory (the same way `git` finds `.git/`). If none is found, the binary refuses to silently create one in your home directory — you must `cairn-cli init` from a project root, or set `CAIRN_DB`/pass `--db` explicitly to opt into a global graph.
+
+Override paths anywhere with `--db /absolute/path` or the `CAIRN_DB` environment variable.
 
 ## Design principles
 
@@ -465,7 +489,7 @@ The database path is configurable via `--db` flag or `CAIRN_DB` environment vari
 3. **Semantic tools, not CRUD.** The agent thinks in terms of `learn`, `connect`, `amend` — never "create node" or "insert edge."
 4. **Your voice.** Entries carry tone, opinion, and personality. *"This module is a nightmare, the abstraction is wrong, but here's how to survive it"* is a valid and encouraged entry.
 5. **Graceful cold start.** An empty graph returns nothing from `prime`. The agent works normally. By session three the graph is already useful.
-6. **No cloud, no daemon.** Everything is local. The MCP server runs as a stdio process spawned by the AI coding agent.
+6. **No cloud.** Everything is local. There is a small Unix-socket daemon (`cairn-server`) because SurrealKV is single-writer and multiple Claude Code sessions need to share one graph, but it's auto-spawned on first use by any client and holds an exclusive flock. You never start it manually; `install.sh` SIGTERMs the running daemon on upgrade so the next client picks up the new binary.
 
 ## Platform support
 

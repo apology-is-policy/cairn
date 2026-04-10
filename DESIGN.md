@@ -99,15 +99,20 @@ One workspace, four crates, three binaries (TUI deferred):
 │     └──── db.rs (SurrealDB embedded)                │
 │              │                                      │
 │              ▼                                      │
-│         cairn.db (single file)                     │
-└──────────┬──────────────┬───────────────┬───────────┘
-           │              │               │
-    cairn-mcp      cairn-cli      cairn-tui
-    (stdio MCP)     (shell CLI)     (phase 2)
+│         cairn.db (single directory)                 │
+└──────────────────────┬──────────────────────────────┘
+                       │
+                cairn-server
+            (Unix-socket daemon,
+             owns the DB exclusively)
+                       │
+       ┌───────────────┼───────────────┐
+       │               │               │
+  cairn-mcp       cairn-cli       cairn-tui
+  (stdio MCP)     (shell CLI)    (interactive)
 ```
 
-All three binaries are thin dispatchers into `cairn-core`. Logic is never
-duplicated across binaries.
+All four client binaries are thin dispatchers into `cairn-core`. Logic is never duplicated across binaries. `cairn-server` is the only process that opens the SurrealDB embedded engine — every other binary talks to it over the Unix socket via `CairnClient`, which mirrors the `Cairn` facade method-for-method. This indirection exists because SurrealKV is single-writer; without a daemon, two concurrent Claude Code sessions would race on the same `.cairn/cairn.db` directory.
 
 ### SurrealDB integration
 
@@ -345,7 +350,7 @@ In the project's `.claude/` or user-level config:
   "mcpServers": {
     "cairn": {
       "command": "cairn-mcp",
-      "args": ["--db", "~/.cairn/cairn.db"]
+      "args": []
     }
   }
 }
@@ -372,7 +377,7 @@ tools are no-ops.
 ```json
 {
   "active": true,
-  "db_path": "/Users/michal/.cairn/cairn.db",
+  "db_path": "/Users/michal/projects/acme-monorepo/.cairn/cairn.db",
   "stats": {
     "topics": 142,
     "edges": 387,
@@ -757,7 +762,7 @@ Called by hooks, not typically by the agent directly.
 
 1. Generate a snapshot name if not provided: `snapshot_YYYYMMDD_HHMMSS`.
 2. Run SurrealDB's `EXPORT` to produce a `.surql` dump file.
-3. Store it in `~/.cairn/snapshots/<name>.surql`.
+3. Store it in `<graph-dir>/snapshots/<name>.surql`, where `<graph-dir>` is the `.cairn/` directory containing the active database.
 4. Keep a manifest of all snapshots with timestamps.
 
 **Returns:**
@@ -765,7 +770,7 @@ Called by hooks, not typically by the agent directly.
 ```json
 {
   "name": "before-refactor",
-  "path": "/Users/michal/.cairn/snapshots/before-refactor.surql",
+  "path": "/Users/michal/projects/acme-monorepo/.cairn/snapshots/before-refactor.surql",
   "size_bytes": 284000,
   "created_at": "2026-04-09T14:32:00Z"
 }
@@ -1007,15 +1012,24 @@ persisted even if the agent didn't explicitly call checkpoint.
 
 set -euo pipefail
 
-CAIRN_DB="${CAIRN_DB:-$HOME/.cairn/cairn.db}"
 SESSION_ID="${CAIRN_SESSION_ID:-sess_$(date +%Y%m%d_%H%M%S)}"
 
-if [ ! -d "$CAIRN_DB" ]; then
-  exit 0  # No graph, nothing to do
+# Honor an explicit CAIRN_DB if set; otherwise walk up from cwd looking
+# for a .cairn/ directory the same way `git` finds `.git/`. Exit silently
+# if no graph is in scope — never accidentally create one in a random repo.
+if [ -n "${CAIRN_DB:-}" ]; then
+  DB="$CAIRN_DB"
+else
+  DB=""; d="$PWD"
+  while :; do
+    [ -d "$d/.cairn" ] && { DB="$d/.cairn/cairn.db"; break; }
+    [ "$d" = "/" ] && break
+    d="$(dirname "$d")"
+  done
 fi
+[ -z "$DB" ] || [ ! -d "$DB" ] && exit 0
 
-cairn-cli checkpoint \
-  --db "$CAIRN_DB" \
+cairn-cli --db "$DB" checkpoint \
   --session-id "$SESSION_ID" \
   2>>"$HOME/.cairn/logs/hook.log" || true
 ```
@@ -1035,15 +1049,22 @@ persisted is about to be lost. This is the safety net.
 
 set -euo pipefail
 
-CAIRN_DB="${CAIRN_DB:-$HOME/.cairn/cairn.db}"
 SESSION_ID="${CAIRN_SESSION_ID:-sess_$(date +%Y%m%d_%H%M%S)}"
 
-if [ ! -d "$CAIRN_DB" ]; then
-  exit 0
+# Same walk-up discovery as the save hook.
+if [ -n "${CAIRN_DB:-}" ]; then
+  DB="$CAIRN_DB"
+else
+  DB=""; d="$PWD"
+  while :; do
+    [ -d "$d/.cairn" ] && { DB="$d/.cairn/cairn.db"; break; }
+    [ "$d" = "/" ] && break
+    d="$(dirname "$d")"
+  done
 fi
+[ -z "$DB" ] || [ ! -d "$DB" ] && exit 0
 
-cairn-cli checkpoint \
-  --db "$CAIRN_DB" \
+cairn-cli --db "$DB" checkpoint \
   --session-id "$SESSION_ID" \
   --emergency \
   2>>"$HOME/.cairn/logs/hook.log" || true
@@ -1139,26 +1160,36 @@ COMMANDS:
 
 ## File System Layout
 
+A Cairn graph lives **inside the project tree**, not in the user's home directory. Every binary discovers the database by walking up from the current working directory looking for a `.cairn/` directory (the same way `git` finds `.git/`). There is **no** `~/.cairn/cairn.db` fallback; if no `.cairn/` is found in any ancestor of `cwd`, the binary refuses to silently create one. Opt into a global graph by setting `CAIRN_DB` or passing `--db` explicitly.
+
 ```
-~/.cairn/
-├── cairn.db/                 # SurrealDB data directory (the single artifact)
-├── snapshots/                 # Named backups
-│   ├── manifest.json          # Snapshot index with timestamps
-│   ├── before-refactor.surql
-│   └── snapshot_20260409_143200.surql
-├── hooks/                     # Hook scripts (copied during install)
+<repo-root>/
+└── .cairn/
+    ├── cairn.db/                 # SurrealDB data directory (the single artifact)
+    ├── cairn.sock                # Unix socket for cairn-server ↔ clients
+    ├── .cairn.db.lock            # Single-writer flock held by cairn-server
+    ├── snapshots/                # Named backups
+    │   ├── manifest.json
+    │   ├── before-refactor.surql
+    │   └── snapshot_20260409_143200.surql
+    └── config.toml               # Optional per-graph config overrides
+
+~/.cairn/                         # Not tied to any specific graph
+├── hooks/                        # Hook scripts (copied by install.sh)
 │   ├── cairn_save_hook.sh
 │   └── cairn_precompact_hook.sh
-├── logs/                      # Hook and server logs
-│   └── hook.log
-└── config.toml                # Optional global config overrides
+└── logs/
+    ├── hook.log                  # Stderr from save/precompact hooks
+    └── cairn-server.log          # Stderr from the daemon
 ```
 
 ### config.toml (optional)
 
+`config.toml` lives next to the database at `<repo-root>/.cairn/config.toml` and only applies to that graph.
+
 ```toml
 [database]
-path = "~/.cairn/cairn.db"
+# path is implicit — the file's location defines the graph
 
 [prime]
 max_tokens = 4000
@@ -1174,7 +1205,7 @@ auto = true              # agent learns without being asked
 checkpoint_interval = 15 # messages between save hook fires
 
 [snapshot]
-directory = "~/.cairn/snapshots"
+# Snapshots live in <repo-root>/.cairn/snapshots/ by default.
 auto_snapshot_days = 7   # auto-snapshot every N days on first session start
 max_snapshots = 30       # prune oldest beyond this count
 ```
