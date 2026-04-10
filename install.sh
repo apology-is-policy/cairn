@@ -24,11 +24,11 @@ LOGS_DIR="$HOME/.cairn/logs"
 
 echo "Building Cairn ($PROFILE profile)..."
 cd "$REPO_ROOT"
-cargo build $CARGO_FLAGS -p cairn-cli -p cairn-mcp -p cairn-server
+cargo build $CARGO_FLAGS -p cairn-cli -p cairn-mcp -p cairn-server -p cairn-tui
 
 mkdir -p "$BIN_DIR"
 
-for bin in cairn-cli cairn-mcp cairn-server; do
+for bin in cairn-cli cairn-mcp cairn-server cairn-tui; do
   src="$REPO_ROOT/target/$PROFILE_DIR/$bin"
   dst="$BIN_DIR/$bin"
   if [[ ! -f "$src" ]]; then

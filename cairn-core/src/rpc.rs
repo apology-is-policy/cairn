@@ -32,6 +32,7 @@ pub enum CairnRequest {
     Reset,
     Checkpoint(CheckpointParams),
     History(HistoryParams),
+    GetTopic { key: String },
 
     // Queries
     Search(SearchParams),
@@ -178,6 +179,7 @@ mod tests {
             limit: 10,
             session_id: None,
         }));
+        round_trip(CairnRequest::GetTopic { key: "k".into() });
         round_trip(CairnRequest::Search(SearchParams::default()));
         round_trip(CairnRequest::Explore(ExploreParams {
             topic_key: "k".into(),

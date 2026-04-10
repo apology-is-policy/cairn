@@ -15,7 +15,36 @@ pub use error::{CairnError, Result};
 pub use rpc::{CairnRequest, CairnResponse, RPC_PROTOCOL_VERSION};
 pub use types::*;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// Resolve the default Cairn database path for the current process.
+///
+/// Walks up from the current working directory looking for a `.cairn/`
+/// directory (the same way `git` finds `.git/`). The first match wins and
+/// the database path is `<ancestor>/.cairn/cairn.db`. If no ancestor
+/// contains `.cairn/`, falls back to `./.cairn/cairn.db` relative to the
+/// current working directory — so `cairn-cli init` from a fresh repo
+/// creates the database in the right place.
+///
+/// This deliberately does NOT fall back to `~/.cairn/cairn.db`. A Cairn
+/// graph belongs to a specific project tree; opt into a global graph by
+/// setting `CAIRN_DB` or passing `--db` explicitly.
+pub fn default_db_path() -> PathBuf {
+    if let Ok(cwd) = std::env::current_dir() {
+        let mut here: &Path = &cwd;
+        loop {
+            if here.join(".cairn").is_dir() {
+                return here.join(".cairn").join("cairn.db");
+            }
+            match here.parent() {
+                Some(p) => here = p,
+                None => break,
+            }
+        }
+        return cwd.join(".cairn").join("cairn.db");
+    }
+    PathBuf::from(".cairn").join("cairn.db")
+}
 
 /// The main facade for all Cairn operations.
 ///
@@ -91,6 +120,13 @@ impl Cairn {
 
     pub async fn history(&self, params: HistoryParams) -> Result<HistoryResult> {
         ops::history(&self.db, params).await
+    }
+
+    /// Fetch a single topic by key, including all blocks. Errors if missing.
+    pub async fn get_topic(&self, key: &str) -> Result<Topic> {
+        ops::get_topic_by_key(&self.db, key)
+            .await?
+            .ok_or_else(|| CairnError::TopicNotFound(key.to_string()))
     }
 
     // ── Query operations (search.rs) ─────────────────────────────

@@ -6,9 +6,48 @@ use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::ErrorData as McpError;
 use rmcp::model::*;
 use rmcp::{tool, tool_handler, tool_router, ServerHandler, ServiceExt};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
-use cairn_core::CairnClient;
+use cairn_core::{default_db_path, CairnClient};
+
+/// Defensive deserializer for `Vec<String>` fields that some MCP clients send
+/// as a stringified JSON array (e.g. `"[\"a\",\"b\"]"`) instead of a real array.
+/// Also accepts a comma-separated string. Falls back to `None` for empty input.
+fn flexible_string_vec<'de, D>(d: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Either {
+        Vec(Vec<String>),
+        Str(String),
+    }
+
+    let opt: Option<Either> = Option::deserialize(d)?;
+    match opt {
+        None => Ok(None),
+        Some(Either::Vec(v)) => Ok(Some(v)),
+        Some(Either::Str(s)) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                return Ok(None);
+            }
+            // Try a JSON-encoded array first.
+            if let Ok(v) = serde_json::from_str::<Vec<String>>(trimmed) {
+                return Ok(Some(v));
+            }
+            // Fall back to comma-separated.
+            Ok(Some(
+                trimmed
+                    .split(',')
+                    .map(|x| x.trim().to_string())
+                    .filter(|x| !x.is_empty())
+                    .collect(),
+            ))
+        }
+    }
+}
 
 // ── Parameter types ──────────────────────────────────────────────
 
@@ -33,6 +72,7 @@ pub struct LearnRequest {
     /// Optional mood/tone annotation
     pub voice: Option<String>,
     /// Tags for categorization
+    #[serde(default, deserialize_with = "flexible_string_vec")]
     pub tags: Option<Vec<String>>,
     /// Position: "start", "end", or "after:<block_id>"
     pub position: Option<String>,
@@ -81,6 +121,7 @@ pub struct ExploreRequest {
     /// Traversal depth (default: 1)
     pub depth: Option<usize>,
     /// Edge type filter (empty = all)
+    #[serde(default, deserialize_with = "flexible_string_vec")]
     pub edge_types: Option<Vec<String>>,
 }
 
@@ -185,11 +226,28 @@ pub struct CairnMcpServer {
 }
 
 fn parse_position(s: Option<&str>) -> cairn_core::Position {
-    match s {
-        Some("start") => cairn_core::Position::Start,
-        Some(s) if s.starts_with("after:") => cairn_core::Position::After(s[6..].to_string()),
-        _ => cairn_core::Position::End,
+    let s = match s {
+        Some(s) => s.trim(),
+        None => return cairn_core::Position::End,
+    };
+    if s.is_empty() {
+        return cairn_core::Position::End;
     }
+    // Simple string forms — what the docstring advertises.
+    match s {
+        "start" => return cairn_core::Position::Start,
+        "end" => return cairn_core::Position::End,
+        _ => {}
+    }
+    if let Some(after) = s.strip_prefix("after:") {
+        return cairn_core::Position::After(after.to_string());
+    }
+    // Defensive: some MCP clients stringify the structured form
+    // (`{"kind":"end"}` or `{"kind":"after","value":"b_..."}`).
+    if let Ok(p) = serde_json::from_str::<cairn_core::Position>(s) {
+        return p;
+    }
+    cairn_core::Position::End
 }
 
 fn parse_edge_kind(s: &str) -> Result<cairn_core::EdgeKind, McpError> {
@@ -564,17 +622,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    // Determine DB path from args or env
-    let db_path = std::env::args()
+    // Determine DB path from args, env, or repo discovery
+    let path = std::env::args()
         .position(|a| a == "--db")
         .and_then(|i| std::env::args().nth(i + 1))
-        .or_else(|| std::env::var("CAIRN_DB").ok())
-        .unwrap_or_else(|| {
-            let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-            format!("{home}/.cairn/cairn.db")
-        });
-
-    let path = PathBuf::from(&db_path);
+        .map(PathBuf::from)
+        .or_else(|| std::env::var("CAIRN_DB").ok().map(PathBuf::from))
+        .unwrap_or_else(default_db_path);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }

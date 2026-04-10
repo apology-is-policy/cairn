@@ -235,11 +235,6 @@ enum VoiceCommand {
     Edit,
 }
 
-fn default_db_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join(".cairn").join("cairn.db")
-}
-
 fn parse_position(s: &str) -> Position {
     match s {
         "start" => Position::Start,

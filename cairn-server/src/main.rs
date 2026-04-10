@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cairn_core::rpc::{CairnRequest, CairnResponse};
-use cairn_core::{derive_lock_path, derive_socket_path, Cairn, CairnError};
+use cairn_core::{default_db_path, derive_lock_path, derive_socket_path, Cairn, CairnError};
 use clap::Parser;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::unix::OwnedWriteHalf;
@@ -27,11 +27,6 @@ struct Args {
     /// Path to the Cairn database directory.
     #[arg(long, env = "CAIRN_DB")]
     db: Option<PathBuf>,
-}
-
-fn default_db_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join(".cairn").join("cairn.db")
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -217,6 +212,7 @@ async fn dispatch(cairn: &Cairn, req: CairnRequest) -> CairnResponse {
         Reset => cairn.reset().await.map(|_| serde_json::Value::Null),
         Checkpoint(p) => to_val(cairn.checkpoint(p).await),
         History(p) => to_val(cairn.history(p).await),
+        GetTopic { key } => to_val(cairn.get_topic(&key).await),
 
         Search(p) => to_val(cairn.search(p).await),
         Explore(p) => to_val(cairn.explore(p).await),

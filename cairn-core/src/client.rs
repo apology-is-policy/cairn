@@ -213,6 +213,13 @@ impl CairnClient {
         self.call(CairnRequest::History(params)).await
     }
 
+    pub async fn get_topic(&self, key: &str) -> Result<Topic> {
+        self.call(CairnRequest::GetTopic {
+            key: key.to_string(),
+        })
+        .await
+    }
+
     pub async fn search(&self, params: SearchParams) -> Result<SearchResult> {
         self.call(CairnRequest::Search(params)).await
     }
