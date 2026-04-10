@@ -66,13 +66,16 @@ After a few sessions, the graph is already useful. By session ten, the agent kno
 ```bash
 git clone https://github.com/youruser/cairn.git
 cd cairn
-cargo build --release
+./install.sh
 ```
 
-The binaries are at `target/release/cairn-cli` and `target/release/cairn-mcp`. Install them somewhere on your `PATH`:
+`install.sh` builds the release binaries and copies `cairn-cli` and `cairn-mcp` to `~/.local/bin/`. If that directory isn't on your `PATH`, the script tells you how to add it.
+
+If you'd rather install manually:
 
 ```bash
-cp target/release/cairn-cli target/release/cairn-mcp /usr/local/bin/
+cargo build --release
+cp target/release/cairn-cli target/release/cairn-mcp ~/.local/bin/
 ```
 
 ### Initialize your graph
@@ -94,7 +97,12 @@ An empty graph works fine — the agent builds the taxonomy as it works. But you
 cairn-cli init --taxonomy scan
 ```
 
-This copies a taxonomer agent to `.claude/agents/taxonomer.md`. Run it in Claude Code with `/agents/taxonomer` and it will recursively scan the codebase, read key files, and populate the graph with topics and connections.
+This copies the **taxonomer** agent to `.claude/agents/taxonomer.md`. Run it in Claude Code with `/agents/taxonomer`. It will ask you two questions before starting:
+
+1. **How granular should the taxonomy be?** (shallow / medium / deep)
+2. **Any areas to skip or focus on?** (vendored deps, generated code, specific subdirs)
+
+Then it recursively scans the codebase, reads key files, and populates the graph with topics and connections matching the granularity you chose.
 
 **Option B: Describe the structure** — Seed the top-level domains manually:
 
@@ -105,6 +113,26 @@ cairn-cli init --taxonomy "Payments, Auth, Infrastructure, Data Pipeline"
 This creates a root topic for each domain. The agent will fill in subtopics as it works under these established categories.
 
 **Option C: Start empty** — Just `cairn-cli init` with no `--taxonomy` flag. The agent figures out the structure on its own.
+
+### Maintaining the taxonomy
+
+Two additional agents ship with Cairn for keeping the graph healthy as the codebase evolves. They live in `agents/` in the Cairn repo — copy them into your project's `.claude/agents/` to use them:
+
+```bash
+cp agents/taxonomer-explode.md agents/taxonomer-verify.md /path/to/your/project/.claude/agents/
+```
+
+**`taxonomer-explode`** — Take a single existing topic that has become too broad and recursively expand it into a tree of more granular sub-topics. Useful when your initial scan was shallow and you want to drill into specific areas without re-scanning the whole repo. Run it with `/agents/taxonomer-explode`. It will ask which topic to expand, how deep to recurse, and which sub-areas to skip.
+
+**`taxonomer-verify`** — Walk the existing graph and report issues without making changes. Detects:
+- **Stale topics** whose underlying code has changed since the topic was last updated
+- **Broad leaves** that should probably be exploded
+- **Orphans** (topics with no edges)
+- **Dead links** to file paths that no longer exist
+- **Self-contradictions** between blocks in the same topic
+- **Cycles** in `depends_on` chains
+
+Run it with `/agents/taxonomer-verify`. It produces a report grouped by issue type with suggested actions — you decide what to fix.
 
 ### Connect to Claude Code
 
@@ -148,6 +176,47 @@ Add checkpoint hooks to your Claude Code settings so the graph is saved automati
 ```
 
 This assumes `cairn-cli` is on your `PATH`. If not, use the full path (e.g. `/usr/local/bin/cairn-cli`).
+
+### Updating Cairn
+
+When you pull new changes to the Cairn repo, three things may need updating:
+
+1. **Binaries** — rebuild and reinstall:
+   ```bash
+   cd /path/to/cairn && ./install.sh
+   ```
+
+2. **Agent files** in your project — re-install the bundled taxonomer agents (run from your project root):
+   ```bash
+   cairn-cli install-agents
+   ```
+   This copies all bundled agents into `./.claude/agents/`, overwriting any existing versions.
+
+3. **Database schema** — opens automatically apply forward migrations. If your binary is older than your DB, opening will fail with a clear error telling you to update.
+
+### Health check
+
+`cairn-cli doctor` reports the binary version, schema compatibility, and whether your installed agent files match the bundled versions:
+
+```
+$ cairn-cli doctor
+Cairn doctor
+
+Binary:
+  cairn-cli version: 0.1.0
+  schema support:    v1
+
+Database (~/.cairn/cairn.db):
+  schema version:    v1
+  status:            OK
+
+Agents in ./.claude/agents:
+  ✓ taxonomer.md           match
+  ✗ taxonomer-explode.md   differs from bundled — run `cairn-cli install-agents`
+  · taxonomer-verify.md    missing
+```
+
+Run it after a Cairn update to confirm everything is in sync.
 
 ## How Claude Code uses Cairn
 

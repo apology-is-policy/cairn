@@ -32,6 +32,29 @@ RECORD INSIGHTS AND DISCOVERIES:
 - A past incident relevant to current work → `connect` with `war_story`
 - That existing knowledge is wrong → `amend` the specific block
 
+KEEP THE GRAPH FRESH:
+The graph is a cache of what was true when topics were last touched. Code
+moves faster than the graph, so when you actually work in an area, treat
+existing topics as a starting hypothesis and verify before relying on them.
+- When you start working substantively in an area covered by an existing
+  topic, check the topic's freshness. Use `history <topic-key>` to see when
+  the topic was last touched.
+- If the topic was last updated more than ~30 days ago AND you'll be making
+  non-trivial changes there, do a quick freshness check before trusting it:
+  if the project uses git, run `git log --since="<topic.updated_at>" --
+  <relevant paths>` and skim the diffs for anything that contradicts the
+  topic. Significant refactors, renamed entry points, changed dependencies,
+  or removed gotchas all warrant an update.
+- When you find the code has diverged from what cairn says, ALWAYS `amend`
+  the specific stale block rather than appending a new one. This preserves
+  the audit trail (old content saved to history) and prevents topics from
+  disagreeing with themselves.
+- If the gotcha no longer applies, amend it or remove the edge with a note
+  explaining why. Stale gotchas waste future agents' attention.
+- This freshness check is for substantive work — making changes, recommending
+  architecture, debugging in the area. Don't do it for skim-reads or quick
+  reference lookups; the cost isn't worth it for one-off questions.
+
 DO NOT LOG:
 - Individual file imports, obvious type signatures, or boilerplate
 - Things already captured in the graph (call `search` first to check)

@@ -12,6 +12,20 @@ Build a comprehensive knowledge graph that could teach someone the codebase from
 
 ## Workflow
 
+### Phase 0: Calibrate with the user
+
+**Before scanning, ask the user two questions** and wait for answers:
+
+1. **How granular should the taxonomy be?**
+   - **Shallow** — just top-level boundaries (1-2 levels deep, ~10-20 topics). Good for small projects or a quick overview.
+   - **Medium** — major modules within each area (2-3 levels deep, ~30-60 topics). Good default for most monorepos.
+   - **Deep** — recurse into every meaningful logical chunk (3-5 levels deep, 80+ topics). Good for large monorepos where you want a thorough atlas.
+
+2. **Are there any areas you want me to skip or focus on?**
+   Common things to skip: vendored dependencies, generated code, legacy/deprecated areas the user no longer touches, third-party integrations they don't own. The user might also want you to focus on a specific subdirectory rather than the whole repo.
+
+Echo back what you understood before starting. The granularity setting determines how aggressively you recurse into subdirectories in the next phases — don't over- or under-shoot it.
+
 ### Phase 1: Discovery
 
 1. Start by reading any top-level documentation: README.md, CLAUDE.md, DESIGN.md, ARCHITECTURE.md, or similar files.

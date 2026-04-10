@@ -7,6 +7,10 @@ use crate::error::{CairnError, Result};
 
 const SCHEMA: &str = include_str!("schema.surql");
 
+/// The schema version this binary knows how to handle.
+/// Bump when adding migrations.
+pub const CURRENT_SCHEMA_VERSION: i64 = 1;
+
 pub struct CairnDb {
     pub(crate) db: Surreal<Db>,
     pub db_path: String,
@@ -53,10 +57,16 @@ impl CairnDb {
     }
 
     async fn run_migrations(&self) -> Result<()> {
-        // Check current schema version
-        let version = self.get_schema_version().await?;
+        let db_version = self.get_schema_version().await?;
 
-        if version < 1 {
+        if db_version > CURRENT_SCHEMA_VERSION {
+            return Err(CairnError::SchemaVersionMismatch {
+                db: db_version,
+                binary: CURRENT_SCHEMA_VERSION,
+            });
+        }
+
+        if db_version < 1 {
             self.db
                 .query(SCHEMA)
                 .await
@@ -65,7 +75,14 @@ impl CairnDb {
             self.set_schema_version(1).await?;
         }
 
+        // Future migrations: add `if db_version < 2 { ... }` blocks here.
+
         Ok(())
+    }
+
+    /// Read the current schema version stored in the database.
+    pub async fn schema_version(&self) -> Result<i64> {
+        self.get_schema_version().await
     }
 
     async fn get_schema_version(&self) -> Result<i64> {

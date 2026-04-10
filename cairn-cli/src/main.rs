@@ -4,6 +4,19 @@ use clap::{Parser, Subcommand};
 
 use cairn_core::*;
 
+// Bundled agent files — embedded at compile time so the binary is self-contained.
+const BUNDLED_AGENTS: &[(&str, &str)] = &[
+    ("taxonomer.md", include_str!("../../agents/taxonomer.md")),
+    (
+        "taxonomer-explode.md",
+        include_str!("../../agents/taxonomer-explode.md"),
+    ),
+    (
+        "taxonomer-verify.md",
+        include_str!("../../agents/taxonomer-verify.md"),
+    ),
+];
+
 #[derive(Parser)]
 #[command(name = "cairn", about = "Personal AI agent knowledge graph")]
 struct Cli {
@@ -192,6 +205,14 @@ enum Command {
         #[command(subcommand)]
         action: Option<VoiceCommand>,
     },
+    /// Install or update bundled taxonomer agents into .claude/agents/
+    InstallAgents {
+        /// Target directory (default: ./.claude/agents/)
+        #[arg(long)]
+        target: Option<String>,
+    },
+    /// Health check: binary version, schema version, agent file freshness
+    Doctor,
     /// Delete all data from the graph
     Reset,
     /// Export full graph as JSON
@@ -253,6 +274,45 @@ macro_rules! output {
             print!("{}", $fmt);
         }
     };
+}
+
+/// Write all bundled agent files into the target directory.
+fn install_agents_to(target: &std::path::Path) -> std::io::Result<Vec<PathBuf>> {
+    std::fs::create_dir_all(target)?;
+    let mut written = Vec::new();
+    for (name, content) in BUNDLED_AGENTS {
+        let path = target.join(name);
+        std::fs::write(&path, content)?;
+        written.push(path);
+    }
+    Ok(written)
+}
+
+#[derive(Debug)]
+enum AgentStatus {
+    Match,
+    Differs,
+    Missing,
+}
+
+/// Compare each bundled agent against the file in the target directory.
+fn check_agents(target: &std::path::Path) -> Vec<(&'static str, AgentStatus)> {
+    BUNDLED_AGENTS
+        .iter()
+        .map(|(name, bundled)| {
+            let path = target.join(name);
+            let status = if !path.exists() {
+                AgentStatus::Missing
+            } else {
+                match std::fs::read_to_string(&path) {
+                    Ok(installed) if installed == *bundled => AgentStatus::Match,
+                    Ok(_) => AgentStatus::Differs,
+                    Err(_) => AgentStatus::Missing,
+                }
+            };
+            (*name, status)
+        })
+        .collect()
 }
 
 fn render_tree(view: &GraphViewResult) -> String {
@@ -411,13 +471,13 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             // Handle taxonomy option
             if let Some(taxonomy) = taxonomy {
                 if taxonomy == "scan" {
-                    let agent_content = include_str!("../../agents/taxonomer.md");
                     let agent_dir = std::env::current_dir()?.join(".claude").join("agents");
-                    std::fs::create_dir_all(&agent_dir)?;
-                    let agent_path = agent_dir.join("taxonomer.md");
-                    std::fs::write(&agent_path, agent_content)?;
-                    println!("\nTaxonomer agent installed at {}", agent_path.display());
-                    println!("Run it with: /agents/taxonomer");
+                    install_agents_to(&agent_dir)?;
+                    println!(
+                        "\nAll taxonomer agents installed at {}",
+                        agent_dir.display()
+                    );
+                    println!("Run the initial scan with: /agents/taxonomer");
                 } else {
                     // Treat as "describe Domain1, Domain2, ..."
                     let description = taxonomy.strip_prefix("describe ").unwrap_or(&taxonomy);
@@ -884,6 +944,89 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     let _ = std::fs::remove_file(&tmp);
+                }
+            }
+        }
+
+        Command::InstallAgents { target } => {
+            let target_dir = match target {
+                Some(t) => PathBuf::from(t),
+                None => std::env::current_dir()?.join(".claude").join("agents"),
+            };
+            let written = install_agents_to(&target_dir)?;
+            if json {
+                let paths: Vec<String> = written.iter().map(|p| p.display().to_string()).collect();
+                println!("{}", serde_json::to_string_pretty(&paths)?);
+            } else {
+                println!(
+                    "Installed {} agent(s) to {}:",
+                    written.len(),
+                    target_dir.display()
+                );
+                for p in &written {
+                    if let Some(name) = p.file_name() {
+                        println!("  {}", name.to_string_lossy());
+                    }
+                }
+            }
+        }
+
+        Command::Doctor => {
+            let bin_version = env!("CARGO_PKG_VERSION");
+            let bin_schema = CURRENT_SCHEMA_VERSION;
+            let db_schema = cairn.schema_version().await?;
+            let agent_target = std::env::current_dir()?.join(".claude").join("agents");
+            let agent_status = check_agents(&agent_target);
+
+            let schema_status = if db_schema == bin_schema {
+                "OK"
+            } else if db_schema < bin_schema {
+                "older — migrations would be applied on next open"
+            } else {
+                "NEWER than binary — update cairn-cli/cairn-mcp"
+            };
+
+            if json {
+                let report = serde_json::json!({
+                    "binary_version": bin_version,
+                    "binary_schema_version": bin_schema,
+                    "db_schema_version": db_schema,
+                    "schema_status": schema_status,
+                    "agent_target": agent_target.display().to_string(),
+                    "agents": agent_status.iter().map(|(name, status)| {
+                        serde_json::json!({
+                            "name": name,
+                            "status": format!("{:?}", status).to_lowercase(),
+                        })
+                    }).collect::<Vec<_>>(),
+                });
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!("Cairn doctor");
+                println!();
+                println!("Binary:");
+                println!("  cairn-cli version: {}", bin_version);
+                println!("  schema support:    v{}", bin_schema);
+                println!();
+                println!("Database ({}):", cairn.db_path());
+                println!("  schema version:    v{}", db_schema);
+                println!("  status:            {}", schema_status);
+                println!();
+                println!("Agents in {}:", agent_target.display());
+                for (name, status) in &agent_status {
+                    let mark = match status {
+                        AgentStatus::Match => "✓",
+                        AgentStatus::Differs => "✗",
+                        AgentStatus::Missing => "·",
+                    };
+                    let label = match status {
+                        AgentStatus::Match => "match",
+                        AgentStatus::Differs => {
+                            "differs from bundled — run `cairn-cli install-agents`"
+                        }
+                        AgentStatus::Missing => "missing",
+                    };
+                    println!("  {} {:<22} {}", mark, name, label);
                 }
             }
         }

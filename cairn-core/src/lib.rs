@@ -7,7 +7,7 @@ pub mod search;
 pub mod snapshot;
 pub mod types;
 
-pub use db::CairnDb;
+pub use db::{CairnDb, CURRENT_SCHEMA_VERSION};
 pub use error::{CairnError, Result};
 pub use types::*;
 
@@ -37,6 +37,11 @@ impl Cairn {
     /// The database path (or ":memory:").
     pub fn db_path(&self) -> &str {
         &self.db.db_path
+    }
+
+    /// The schema version stored in this database.
+    pub async fn schema_version(&self) -> Result<i64> {
+        self.db.schema_version().await
     }
 
     // ── Initialization ───────────────────────────────────────────

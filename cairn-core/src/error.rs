@@ -23,6 +23,9 @@ pub enum CairnError {
     #[error("Topic key already exists: {0}")]
     TopicKeyConflict(String),
 
+    #[error("Schema version mismatch: database is at v{db}, binary supports v{binary}. Update the binary to a newer version.")]
+    SchemaVersionMismatch { db: i64, binary: i64 },
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
