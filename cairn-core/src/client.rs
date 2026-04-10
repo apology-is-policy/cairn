@@ -72,32 +72,26 @@ impl CairnClient {
     /// Connect to `cairn-server`, auto-spawning it if needed.
     pub async fn connect_or_spawn(db_path: &Path) -> Result<Self> {
         let socket_path = derive_socket_path(db_path);
+        let stream = open_stream_or_spawn(db_path, &socket_path).await?;
+        Ok(Self::from_stream(stream, db_path, socket_path))
+    }
 
-        // Fast path: existing daemon.
-        if let Ok(stream) = UnixStream::connect(&socket_path).await {
-            return Ok(Self::from_stream(stream, db_path, socket_path));
-        }
-
-        // Slow path: spawn detached and poll.
-        if let Some(parent) = db_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        spawn_server(db_path)?;
-
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            if let Ok(stream) = UnixStream::connect(&socket_path).await {
-                return Ok(Self::from_stream(stream, db_path, socket_path));
-            }
-            if Instant::now() >= deadline {
-                return Err(CairnError::Other(
-                    "cairn-server did not become reachable within 5 seconds. \
-                     Check ~/.cairn/logs/cairn-server.log for details."
-                        .into(),
-                ));
-            }
-        }
+    /// Re-establish the connection in place after a connection-level failure.
+    ///
+    /// Used by `call()` when the cached socket is dead — typically because
+    /// the daemon was restarted (e.g. by `install.sh` after an upgrade).
+    /// Auto-spawns a new daemon if no socket is reachable. The new
+    /// `Connection` replaces the old one inside `self.inner`, so any other
+    /// in-flight callers waiting on the lock pick up the fresh socket
+    /// transparently.
+    async fn reconnect(&self) -> Result<()> {
+        let stream = open_stream_or_spawn(Path::new(&self.db_path), &self.socket_path).await?;
+        let (r, w) = stream.into_split();
+        let mut conn = self.inner.lock().await;
+        conn.reader = BufReader::new(r);
+        conn.writer = w;
+        conn.line_buf.clear();
+        Ok(())
     }
 
     fn from_stream(stream: UnixStream, db_path: &Path, socket_path: PathBuf) -> Self {
@@ -123,22 +117,40 @@ impl CairnClient {
     }
 
     async fn call<T: DeserializeOwned>(&self, req: CairnRequest) -> Result<T> {
-        let mut conn = self.inner.lock().await;
-
         let line =
             serde_json::to_string(&req).map_err(|e| CairnError::Other(format!("encode: {e}")))?;
+
+        // First attempt with the cached connection.
+        match self.try_call::<T>(&line).await {
+            Ok(v) => Ok(v),
+            Err(e) if e.is_connection_dead() => {
+                // The daemon went away (most likely a planned restart from
+                // `install.sh`). Reconnect once and retry. The reconnect
+                // will auto-spawn a fresh daemon if needed.
+                self.reconnect().await?;
+                self.try_call::<T>(&line)
+                    .await
+                    .map_err(CallError::into_cairn_error)
+            }
+            Err(e) => Err(e.into_cairn_error()),
+        }
+    }
+
+    async fn try_call<T: DeserializeOwned>(
+        &self,
+        line: &str,
+    ) -> std::result::Result<T, CallError> {
+        let mut conn = self.inner.lock().await;
+
         conn.writer
             .write_all(line.as_bytes())
             .await
-            .map_err(|e| CairnError::Other(format!("write: {e}")))?;
+            .map_err(CallError::Connection)?;
         conn.writer
             .write_all(b"\n")
             .await
-            .map_err(|e| CairnError::Other(format!("write: {e}")))?;
-        conn.writer
-            .flush()
-            .await
-            .map_err(|e| CairnError::Other(format!("flush: {e}")))?;
+            .map_err(CallError::Connection)?;
+        conn.writer.flush().await.map_err(CallError::Connection)?;
 
         let Connection {
             reader, line_buf, ..
@@ -147,21 +159,20 @@ impl CairnClient {
         let n = reader
             .read_line(line_buf)
             .await
-            .map_err(|e| CairnError::Other(format!("read: {e}")))?;
+            .map_err(CallError::Connection)?;
         if n == 0 {
-            return Err(CairnError::Other(
-                "cairn-server closed the connection unexpectedly".into(),
-            ));
+            return Err(CallError::UnexpectedEof);
         }
 
         let resp: CairnResponse = serde_json::from_str(line_buf.trim_end())
-            .map_err(|e| CairnError::Other(format!("decode envelope: {e}")))?;
+            .map_err(|e| CallError::Codec(format!("decode envelope: {e}")))?;
 
         if !resp.ok {
-            return Err(reconstruct_error(resp));
+            return Err(CallError::Remote(reconstruct_error(resp)));
         }
         let value = resp.result.unwrap_or(serde_json::Value::Null);
-        serde_json::from_value(value).map_err(|e| CairnError::Other(format!("decode result: {e}")))
+        serde_json::from_value(value)
+            .map_err(|e| CallError::Codec(format!("decode result: {e}")))
     }
 
     // ── Mirrored Cairn API ───────────────────────────────────────
@@ -300,6 +311,37 @@ impl CairnClient {
 
 // ── Auto-spawn ───────────────────────────────────────────────────
 
+/// Try to open a Unix-socket connection to a running cairn-server. If none
+/// is reachable, spawn one and poll for it. Used by both `connect_or_spawn`
+/// (initial connect) and `reconnect` (after a connection-level failure).
+async fn open_stream_or_spawn(db_path: &Path, socket_path: &Path) -> Result<UnixStream> {
+    // Fast path: existing daemon.
+    if let Ok(stream) = UnixStream::connect(socket_path).await {
+        return Ok(stream);
+    }
+
+    // Slow path: spawn detached and poll for the socket to appear.
+    if let Some(parent) = db_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    spawn_server(db_path)?;
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if let Ok(stream) = UnixStream::connect(socket_path).await {
+            return Ok(stream);
+        }
+        if Instant::now() >= deadline {
+            return Err(CairnError::Other(
+                "cairn-server did not become reachable within 5 seconds. \
+                 Check ~/.cairn/logs/cairn-server.log for details."
+                    .into(),
+            ));
+        }
+    }
+}
+
 fn spawn_server(db_path: &Path) -> Result<()> {
     use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
@@ -362,6 +404,55 @@ fn which(name: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+// ── Internal call-error classification ───────────────────────────
+
+/// Internal error type used by `try_call`. Captures enough detail to
+/// decide whether the failure is "the connection is dead, retry safely"
+/// or "the request was processed, surface this to the caller".
+enum CallError {
+    /// `write`/`read` on the socket failed. The `io::ErrorKind` decides
+    /// whether the connection is dead and retry is safe.
+    Connection(std::io::Error),
+    /// `read_line` returned 0 bytes — the daemon closed the connection
+    /// without sending a response. With cairn-server's clean SIGTERM
+    /// handling this only happens when the daemon shut down between
+    /// requests, so retry is safe.
+    UnexpectedEof,
+    /// The daemon returned a structured error response. Pass through
+    /// without retrying.
+    Remote(CairnError),
+    /// Local encode/decode error. Pass through without retrying.
+    Codec(String),
+}
+
+impl CallError {
+    /// True if the failure means the cached connection is unusable and
+    /// the request was (almost certainly) never processed by the daemon,
+    /// so a retry on a fresh connection is safe.
+    fn is_connection_dead(&self) -> bool {
+        use std::io::ErrorKind::*;
+        match self {
+            CallError::Connection(e) => matches!(
+                e.kind(),
+                BrokenPipe | ConnectionReset | ConnectionAborted | NotConnected | UnexpectedEof
+            ),
+            CallError::UnexpectedEof => true,
+            CallError::Remote(_) | CallError::Codec(_) => false,
+        }
+    }
+
+    fn into_cairn_error(self) -> CairnError {
+        match self {
+            CallError::Connection(e) => CairnError::Other(format!("cairn-server: {e}")),
+            CallError::UnexpectedEof => {
+                CairnError::Other("cairn-server closed the connection unexpectedly".into())
+            }
+            CallError::Remote(e) => e,
+            CallError::Codec(msg) => CairnError::Other(msg),
+        }
+    }
 }
 
 // ── Error reconstruction ─────────────────────────────────────────

@@ -32,15 +32,27 @@ async fn wait_for_socket(db_path: &std::path::Path) {
 }
 
 struct ServerGuard {
-    child: std::process::Child,
+    child: Option<std::process::Child>,
     db_dir: PathBuf,
+}
+
+impl ServerGuard {
+    /// Kill and reap the daemon now, but leave the DB directory intact.
+    /// Used by tests that simulate an in-place daemon restart.
+    fn kill_now(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
 }
 
 impl Drop for ServerGuard {
     fn drop(&mut self) {
-        // SIGTERM the child, give it a moment, then SIGKILL if needed.
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
         let _ = std::fs::remove_dir_all(&self.db_dir);
     }
 }
@@ -56,7 +68,7 @@ async fn spawn_server(db_path: &std::path::Path) -> ServerGuard {
         .expect("spawn cairn-server");
     wait_for_socket(db_path).await;
     ServerGuard {
-        child,
+        child: Some(child),
         db_dir: db_path.parent().unwrap().to_path_buf(),
     }
 }
@@ -225,4 +237,51 @@ async fn typed_error_round_trip() {
         .await
         .unwrap_err();
     assert!(matches!(err, CairnError::TopicNotFound(_)));
+}
+
+#[tokio::test]
+async fn client_reconnects_after_daemon_restart() {
+    // Simulates the install.sh upgrade flow: a long-lived client (e.g. a
+    // Claude Code MCP session) holds a cached connection, the daemon is
+    // SIGTERMed and replaced, and the client's next call should
+    // transparently reconnect to the new daemon instead of bubbling a
+    // BrokenPipe error to the user.
+    let db = temp_db();
+    let mut server_a = spawn_server(&db).await;
+
+    let c = CairnClient::connect(&db).await.unwrap();
+    c.init_defaults(Some("voice")).await.unwrap();
+    let stats_before = c.stats().await.unwrap();
+    assert_eq!(stats_before.topics.total, 0);
+
+    // Kill daemon A but keep the DB directory around. Wait long enough
+    // for the kernel to reap the process and release the flock.
+    server_a.kill_now();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Spawn daemon B on the same DB path. The client still holds a
+    // cached UnixStream pointing at A's now-dead listener.
+    let _server_b = spawn_server(&db).await;
+
+    // The first call after restart triggers the recovery path:
+    // try_call hits BrokenPipe → CallError::is_connection_dead → reconnect()
+    // → retry on the fresh socket → success.
+    let stats_after = c.stats().await.unwrap();
+    assert_eq!(stats_after.topics.total, 0);
+
+    // And subsequent calls keep working through the reconnected stream.
+    c.learn(LearnParams {
+        topic_key: "post-restart".into(),
+        title: Some("Post Restart".into()),
+        summary: Some("written through the reconnected socket".into()),
+        content: "if you can read me, the reconnect worked".into(),
+        voice: None,
+        tags: vec![],
+        position: Position::End,
+    })
+    .await
+    .unwrap();
+
+    let stats_final = c.stats().await.unwrap();
+    assert_eq!(stats_final.topics.total, 1);
 }
