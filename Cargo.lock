@@ -604,6 +604,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "directories",
+ "libc",
  "serde",
  "serde_json",
  "surrealdb",
@@ -624,6 +625,21 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "cairn-server"
+version = "0.1.0"
+dependencies = [
+ "cairn-core",
+ "clap",
+ "libc",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

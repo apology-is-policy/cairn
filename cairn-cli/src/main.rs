@@ -444,7 +444,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let cairn = Cairn::open(&db_path).await?;
+    let cairn = CairnClient::connect_or_spawn(&db_path).await?;
 
     match cli.command {
         Command::Init { voice, taxonomy } => {
@@ -578,7 +578,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         } => {
             let kind = parse_edge_kind(&edge_type)?;
             let result = cairn
-                .connect(ConnectParams {
+                .connect_topics(ConnectParams {
                     from,
                     to,
                     edge_type: kind,
@@ -978,6 +978,11 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             let agent_target = std::env::current_dir()?.join(".claude").join("agents");
             let agent_status = check_agents(&agent_target);
 
+            // Daemon status: we know the daemon is running because we got here
+            // (CairnClient::connect_or_spawn succeeded). Show the socket path.
+            let socket_path = cairn.socket_path().display().to_string();
+            let server_status = "running";
+
             let schema_status = if db_schema == bin_schema {
                 "OK"
             } else if db_schema < bin_schema {
@@ -992,6 +997,10 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                     "binary_schema_version": bin_schema,
                     "db_schema_version": db_schema,
                     "schema_status": schema_status,
+                    "server": {
+                        "socket": socket_path,
+                        "status": server_status,
+                    },
                     "agent_target": agent_target.display().to_string(),
                     "agents": agent_status.iter().map(|(name, status)| {
                         serde_json::json!({
@@ -1007,6 +1016,10 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 println!("Binary:");
                 println!("  cairn-cli version: {}", bin_version);
                 println!("  schema support:    v{}", bin_schema);
+                println!();
+                println!("Server:");
+                println!("  socket:            {}", socket_path);
+                println!("  status:            {}", server_status);
                 println!();
                 println!("Database ({}):", cairn.db_path());
                 println!("  schema version:    v{}", db_schema);

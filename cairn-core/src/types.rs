@@ -147,7 +147,8 @@ impl Default for Preferences {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum Position {
     Start,
     End,
@@ -156,7 +157,7 @@ pub enum Position {
 
 // ── Operation parameters ─────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LearnParams {
     pub topic_key: String,
     pub title: Option<String>,
@@ -167,7 +168,7 @@ pub struct LearnParams {
     pub position: Position,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectParams {
     pub from: String,
     pub to: String,
@@ -176,7 +177,7 @@ pub struct ConnectParams {
     pub severity: Option<Severity>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AmendParams {
     pub topic_key: String,
     pub block_id: String,
@@ -184,7 +185,7 @@ pub struct AmendParams {
     pub reason: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchParams {
     pub query: String,
     pub expand: bool,
@@ -201,50 +202,50 @@ impl Default for SearchParams {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExploreParams {
     pub topic_key: String,
     pub depth: usize,
     pub edge_types: Vec<EdgeKind>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PathParams {
     pub from: String,
     pub to: String,
     pub max_depth: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NearbyParams {
     pub topic_key: String,
     pub hops: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckpointParams {
     pub session_id: String,
     pub emergency: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnapshotParams {
     pub name: Option<String>,
     pub path: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RestoreParams {
     pub name: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ForgetParams {
     pub topic_key: String,
     pub reason: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RewriteParams {
     pub topic_key: String,
     pub new_blocks: Vec<NewBlock>,
@@ -257,29 +258,30 @@ pub struct NewBlock {
     pub voice: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryParams {
     pub topic_key: Option<String>,
     pub limit: usize,
     pub session_id: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrimeParams {
     pub task: String,
     pub max_tokens: Option<i64>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RenameParams {
     pub old_key: String,
     pub new_key: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "action", content = "content", rename_all = "snake_case")]
 pub enum VoiceAction {
     Read,
-    Update { content: String },
+    Update(String),
 }
 
 // ── Operation results ────────────────────────────────────────────
@@ -490,4 +492,110 @@ pub struct PrimeResult {
 pub struct VoiceResult {
     pub content: String,
     pub updated_at: DateTime<Utc>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn round_trip<T: Serialize + serde::de::DeserializeOwned + std::fmt::Debug>(value: T) {
+        let json = serde_json::to_string(&value).expect("serialize");
+        let _back: T = serde_json::from_str(&json).expect("deserialize");
+    }
+
+    #[test]
+    fn position_round_trip() {
+        round_trip(Position::Start);
+        round_trip(Position::End);
+        round_trip(Position::After("b_123".into()));
+    }
+
+    #[test]
+    fn voice_action_round_trip() {
+        round_trip(VoiceAction::Read);
+        round_trip(VoiceAction::Update("hello".into()));
+    }
+
+    #[test]
+    fn learn_params_round_trip() {
+        round_trip(LearnParams {
+            topic_key: "k".into(),
+            title: Some("T".into()),
+            summary: Some("S".into()),
+            content: "C".into(),
+            voice: Some("calm".into()),
+            tags: vec!["a".into(), "b".into()],
+            position: Position::After("b_1".into()),
+        });
+    }
+
+    #[test]
+    fn connect_params_round_trip() {
+        round_trip(ConnectParams {
+            from: "a".into(),
+            to: "b".into(),
+            edge_type: EdgeKind::DependsOn,
+            note: "n".into(),
+            severity: Some(Severity::High),
+        });
+    }
+
+    #[test]
+    fn all_param_types_round_trip() {
+        round_trip(AmendParams {
+            topic_key: "k".into(),
+            block_id: "b".into(),
+            new_content: "c".into(),
+            reason: "r".into(),
+        });
+        round_trip(SearchParams::default());
+        round_trip(ExploreParams {
+            topic_key: "k".into(),
+            depth: 2,
+            edge_types: vec![EdgeKind::SeeAlso],
+        });
+        round_trip(PathParams {
+            from: "a".into(),
+            to: "b".into(),
+            max_depth: 5,
+        });
+        round_trip(NearbyParams {
+            topic_key: "k".into(),
+            hops: 2,
+        });
+        round_trip(CheckpointParams {
+            session_id: "s".into(),
+            emergency: false,
+        });
+        round_trip(SnapshotParams {
+            name: Some("n".into()),
+            path: None,
+        });
+        round_trip(RestoreParams { name: "n".into() });
+        round_trip(ForgetParams {
+            topic_key: "k".into(),
+            reason: "r".into(),
+        });
+        round_trip(RewriteParams {
+            topic_key: "k".into(),
+            new_blocks: vec![NewBlock {
+                content: "c".into(),
+                voice: None,
+            }],
+            reason: "r".into(),
+        });
+        round_trip(HistoryParams {
+            topic_key: Some("k".into()),
+            limit: 10,
+            session_id: None,
+        });
+        round_trip(PrimeParams {
+            task: "t".into(),
+            max_tokens: Some(2000),
+        });
+        round_trip(RenameParams {
+            old_key: "a".into(),
+            new_key: "b".into(),
+        });
+    }
 }

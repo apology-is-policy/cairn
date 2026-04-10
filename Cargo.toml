@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["cairn-core", "cairn-mcp", "cairn-cli", "cairn-tui"]
+members = ["cairn-core", "cairn-mcp", "cairn-cli", "cairn-tui", "cairn-server"]
 
 [workspace.dependencies]
 # Database

@@ -8,7 +8,7 @@ use rmcp::model::*;
 use rmcp::{tool, tool_handler, tool_router, ServerHandler, ServiceExt};
 use serde::Deserialize;
 
-use cairn_core::Cairn;
+use cairn_core::CairnClient;
 
 // ── Parameter types ──────────────────────────────────────────────
 
@@ -180,7 +180,7 @@ pub struct VoiceRequest {
 
 #[derive(Clone)]
 pub struct CairnMcpServer {
-    cairn: Arc<Cairn>,
+    cairn: Arc<CairnClient>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -218,7 +218,7 @@ fn cairn_err(e: cairn_core::CairnError) -> McpError {
 
 #[tool_router]
 impl CairnMcpServer {
-    pub fn new(cairn: Arc<Cairn>) -> Self {
+    pub fn new(cairn: Arc<CairnClient>) -> Self {
         Self {
             cairn,
             tool_router: Self::tool_router(),
@@ -278,7 +278,7 @@ impl CairnMcpServer {
         let kind = parse_edge_kind(&req.edge_type)?;
         let result = self
             .cairn
-            .connect(cairn_core::ConnectParams {
+            .connect_topics(cairn_core::ConnectParams {
                 from: req.from,
                 to: req.to,
                 edge_type: kind,
@@ -579,7 +579,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::fs::create_dir_all(parent)?;
     }
 
-    let cairn = Arc::new(Cairn::open(&path).await?);
+    let cairn = Arc::new(CairnClient::connect_or_spawn(&path).await?);
     let server = CairnMcpServer::new(cairn);
 
     let service = server.serve(rmcp::transport::stdio()).await?;

@@ -144,7 +144,7 @@ claude mcp add cairn -- cairn-mcp --db ~/.cairn/cairn.db
 
 ### Install hooks (optional but recommended)
 
-Add checkpoint hooks to your Claude Code settings so the graph is saved automatically. Add the following to `.claude/settings.json` (project-level) or `~/.claude/settings.json` (user-level):
+`install.sh` already installed the hook scripts to `~/.cairn/hooks/`. To wire them into Claude Code, add the following to `.claude/settings.json` (project-level) or `~/.claude/settings.json` (user-level):
 
 ```json
 {
@@ -155,7 +155,7 @@ Add checkpoint hooks to your Claude Code settings so the graph is saved automati
         "hooks": [
           {
             "type": "command",
-            "command": "cairn-cli --db ~/.cairn/cairn.db checkpoint"
+            "command": "CAIRN_DB=$HOME/.cairn/cairn.db $HOME/.cairn/hooks/cairn_save_hook.sh"
           }
         ]
       }
@@ -166,7 +166,7 @@ Add checkpoint hooks to your Claude Code settings so the graph is saved automati
         "hooks": [
           {
             "type": "command",
-            "command": "cairn-cli --db ~/.cairn/cairn.db checkpoint --emergency"
+            "command": "CAIRN_DB=$HOME/.cairn/cairn.db $HOME/.cairn/hooks/cairn_precompact_hook.sh"
           }
         ]
       }
@@ -175,7 +175,14 @@ Add checkpoint hooks to your Claude Code settings so the graph is saved automati
 }
 ```
 
-This assumes `cairn-cli` is on your `PATH`. If not, use the full path (e.g. `/usr/local/bin/cairn-cli`).
+The hook scripts:
+- Locate `cairn-cli` automatically (PATH lookup or fallback to `~/.local/bin/cairn-cli`)
+- Generate session IDs with consistent formatting
+- Exit gracefully if the database doesn't exist (so you can drop them in before initializing)
+- Redirect errors to `~/.cairn/logs/hook.log` so they never pollute Claude Code's UI
+- Use `|| true` so a failed checkpoint never blocks the agent
+
+For a project-specific database, change `CAIRN_DB` to its absolute path. To override the binary location, set `CAIRN_CLI=/path/to/cairn-cli`.
 
 ### Updating Cairn
 

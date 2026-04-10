@@ -1,14 +1,18 @@
+pub mod client;
 pub mod db;
 pub mod error;
 pub mod ops;
 pub mod prime;
 pub mod protocol;
+pub mod rpc;
 pub mod search;
 pub mod snapshot;
 pub mod types;
 
+pub use client::{derive_lock_path, derive_socket_path, CairnClient};
 pub use db::{CairnDb, CURRENT_SCHEMA_VERSION};
 pub use error::{CairnError, Result};
+pub use rpc::{CairnRequest, CairnResponse, RPC_PROTOCOL_VERSION};
 pub use types::*;
 
 use std::path::Path;
