@@ -2,6 +2,13 @@
 resolver = "2"
 members = ["cairn-core", "cairn-mcp", "cairn-cli", "cairn-tui", "cairn-server"]
 
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Michal Frdlik"]
+repository = "https://github.com/apology-is-policy/cairn"
+
 [workspace.dependencies]
 # Database
 surrealdb = { version = "2", features = ["kv-surrealkv", "kv-mem"] }

@@ -500,4 +500,4 @@ Windows is not supported.
 
 ## License
 
-TBD
+[MIT](LICENSE) © 2026 Michal Frdlik
