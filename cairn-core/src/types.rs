@@ -158,6 +158,7 @@ pub enum Position {
 // ── Operation parameters ─────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LearnParams {
     pub topic_key: String,
     pub title: Option<String>,
@@ -169,15 +170,17 @@ pub struct LearnParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConnectParams {
-    pub from: String,
-    pub to: String,
+    pub from_key: String,
+    pub to_key: String,
     pub edge_type: EdgeKind,
     pub note: String,
     pub severity: Option<Severity>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AmendParams {
     pub topic_key: String,
     pub block_id: String,
@@ -186,6 +189,7 @@ pub struct AmendParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SearchParams {
     pub query: String,
     pub expand: bool,
@@ -203,6 +207,7 @@ impl Default for SearchParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExploreParams {
     pub topic_key: String,
     pub depth: usize,
@@ -210,42 +215,49 @@ pub struct ExploreParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PathParams {
-    pub from: String,
-    pub to: String,
+    pub from_key: String,
+    pub to_key: String,
     pub max_depth: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NearbyParams {
     pub topic_key: String,
     pub hops: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CheckpointParams {
     pub session_id: String,
     pub emergency: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SnapshotParams {
     pub name: Option<String>,
     pub path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RestoreParams {
     pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ForgetParams {
     pub topic_key: String,
     pub reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RewriteParams {
     pub topic_key: String,
     pub new_blocks: Vec<NewBlock>,
@@ -253,12 +265,14 @@ pub struct RewriteParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NewBlock {
     pub content: String,
     pub voice: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HistoryParams {
     pub topic_key: Option<String>,
     pub limit: usize,
@@ -266,12 +280,14 @@ pub struct HistoryParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PrimeParams {
     pub task: String,
     pub max_tokens: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RenameParams {
     pub old_key: String,
     pub new_key: String,
@@ -532,12 +548,32 @@ mod tests {
     #[test]
     fn connect_params_round_trip() {
         round_trip(ConnectParams {
-            from: "a".into(),
-            to: "b".into(),
+            from_key: "a".into(),
+            to_key: "b".into(),
             edge_type: EdgeKind::DependsOn,
             note: "n".into(),
             severity: Some(Severity::High),
         });
+    }
+
+    #[test]
+    fn connect_params_rejects_legacy_field_names() {
+        // The pre-v2 wire shape used `from`/`to`. Make sure the new schema
+        // refuses it cleanly with an unknown-field error rather than
+        // silently ignoring the field and complaining about a missing one.
+        let legacy = serde_json::json!({
+            "from": "a",
+            "to": "b",
+            "edge_type": "depends_on",
+            "note": "n",
+            "severity": null,
+        });
+        let err = serde_json::from_value::<ConnectParams>(legacy).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unknown field `from`"),
+            "expected unknown-field error, got: {msg}"
+        );
     }
 
     #[test]
@@ -555,8 +591,8 @@ mod tests {
             edge_types: vec![EdgeKind::SeeAlso],
         });
         round_trip(PathParams {
-            from: "a".into(),
-            to: "b".into(),
+            from_key: "a".into(),
+            to_key: "b".into(),
             max_depth: 5,
         });
         round_trip(NearbyParams {

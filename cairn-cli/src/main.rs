@@ -574,8 +574,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             let kind = parse_edge_kind(&edge_type)?;
             let result = cairn
                 .connect_topics(ConnectParams {
-                    from,
-                    to,
+                    from_key: from,
+                    to_key: to,
                     edge_type: kind,
                     note: note.unwrap_or_default(),
                     severity: severity.map(|s| parse_severity(&s)),
@@ -675,8 +675,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         } => {
             let result = cairn
                 .path(PathParams {
-                    from,
-                    to,
+                    from_key: from,
+                    to_key: to,
                     max_depth,
                 })
                 .await?;

@@ -97,8 +97,8 @@ async fn two_clients_interleave_safely() {
 
     let edge = c1
         .connect_topics(ConnectParams {
-            from: "alpha".into(),
-            to: "beta".into(),
+            from_key: "alpha".into(),
+            to_key: "beta".into(),
             edge_type: EdgeKind::DependsOn,
             note: "alpha needs beta".into(),
             severity: None,
@@ -216,8 +216,8 @@ async fn typed_error_round_trip() {
 
     let err = c
         .connect_topics(ConnectParams {
-            from: "missing-1".into(),
-            to: "missing-2".into(),
+            from_key: "missing-1".into(),
+            to_key: "missing-2".into(),
             edge_type: EdgeKind::DependsOn,
             note: "n".into(),
             severity: None,

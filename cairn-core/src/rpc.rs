@@ -11,7 +11,13 @@ use crate::error::CairnError;
 use crate::types::*;
 
 /// Bumped on any incompatible change to `CairnRequest`/`CairnResponse` shape.
-pub const RPC_PROTOCOL_VERSION: u32 = 1;
+///
+/// History:
+/// - v1: initial release.
+/// - v2: `ConnectParams` and `PathParams` renamed `from`/`to` to
+///   `from_key`/`to_key` for consistency with `Edge` and the other `*Params`
+///   `topic_key` convention. All `*Params` types now `deny_unknown_fields`.
+pub const RPC_PROTOCOL_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", content = "params", rename_all = "snake_case")]
@@ -144,8 +150,8 @@ mod tests {
             position: Position::End,
         }));
         round_trip(CairnRequest::Connect(ConnectParams {
-            from: "a".into(),
-            to: "b".into(),
+            from_key: "a".into(),
+            to_key: "b".into(),
             edge_type: EdgeKind::DependsOn,
             note: "n".into(),
             severity: None,
@@ -187,8 +193,8 @@ mod tests {
             edge_types: vec![],
         }));
         round_trip(CairnRequest::Path(PathParams {
-            from: "a".into(),
-            to: "b".into(),
+            from_key: "a".into(),
+            to_key: "b".into(),
             max_depth: 5,
         }));
         round_trip(CairnRequest::Nearby(NearbyParams {

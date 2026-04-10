@@ -254,12 +254,12 @@ pub async fn learn(db: &CairnDb, params: LearnParams) -> Result<LearnResult> {
 
 /// Create a typed edge between two topics.
 pub async fn connect(db: &CairnDb, params: ConnectParams) -> Result<ConnectResult> {
-    let from_id = get_topic_record_id(db, &params.from)
+    let from_id = get_topic_record_id(db, &params.from_key)
         .await?
-        .ok_or_else(|| CairnError::TopicNotFound(params.from.clone()))?;
-    let to_id = get_topic_record_id(db, &params.to)
+        .ok_or_else(|| CairnError::TopicNotFound(params.from_key.clone()))?;
+    let to_id = get_topic_record_id(db, &params.to_key)
         .await?
-        .ok_or_else(|| CairnError::TopicNotFound(params.to.clone()))?;
+        .ok_or_else(|| CairnError::TopicNotFound(params.to_key.clone()))?;
 
     let table = params.edge_type.table_name();
 
@@ -312,7 +312,7 @@ pub async fn connect(db: &CairnDb, params: ConnectParams) -> Result<ConnectResul
     write_history(
         db,
         "connect",
-        &format!("{}:{}->{}", table, params.from, params.to),
+        &format!("{}:{}->{}", table, params.from_key, params.to_key),
         &format!("{action} {table} edge: {}", params.note),
         None,
     )
@@ -320,8 +320,8 @@ pub async fn connect(db: &CairnDb, params: ConnectParams) -> Result<ConnectResul
 
     Ok(ConnectResult {
         edge: table.into(),
-        from: params.from,
-        to: params.to,
+        from: params.from_key,
+        to: params.to_key,
         action: action.into(),
         note: params.note,
     })
@@ -746,8 +746,8 @@ mod tests {
         let result = connect(
             &db,
             ConnectParams {
-                from: "topic-a".into(),
-                to: "topic-b".into(),
+                from_key: "topic-a".into(),
+                to_key: "topic-b".into(),
                 edge_type: EdgeKind::DependsOn,
                 note: "A depends on B".into(),
                 severity: None,
@@ -784,8 +784,8 @@ mod tests {
         connect(
             &db,
             ConnectParams {
-                from: "x".into(),
-                to: "y".into(),
+                from_key: "x".into(),
+                to_key: "y".into(),
                 edge_type: EdgeKind::SeeAlso,
                 note: "original note".into(),
                 severity: None,
@@ -797,8 +797,8 @@ mod tests {
         let result = connect(
             &db,
             ConnectParams {
-                from: "x".into(),
-                to: "y".into(),
+                from_key: "x".into(),
+                to_key: "y".into(),
                 edge_type: EdgeKind::SeeAlso,
                 note: "updated note".into(),
                 severity: None,
@@ -832,8 +832,8 @@ mod tests {
         let err = connect(
             &db,
             ConnectParams {
-                from: "exists".into(),
-                to: "missing".into(),
+                from_key: "exists".into(),
+                to_key: "missing".into(),
                 edge_type: EdgeKind::DependsOn,
                 note: "n".into(),
                 severity: None,
@@ -1305,8 +1305,8 @@ mod tests {
         connect(
             &db,
             ConnectParams {
-                from: "src".into(),
-                to: "dst".into(),
+                from_key: "src".into(),
+                to_key: "dst".into(),
                 edge_type: EdgeKind::DependsOn,
                 note: "test edge".into(),
                 severity: None,

@@ -52,6 +52,7 @@ where
 // ── Parameter types ──────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PrimeRequest {
     /// Natural language task description, ticket ID, or topic keys
     pub task: String,
@@ -60,6 +61,7 @@ pub struct PrimeRequest {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct LearnRequest {
     /// Existing key to append to, or new key to create
     pub topic_key: String,
@@ -79,11 +81,12 @@ pub struct LearnRequest {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ConnectRequest {
     /// Source topic key
-    pub from: String,
+    pub from_key: String,
     /// Target topic key
-    pub to: String,
+    pub to_key: String,
     /// Edge type: depends_on, contradicts, replaced_by, gotcha, see_also, war_story, owns
     pub edge_type: String,
     /// Why this connection exists
@@ -93,6 +96,7 @@ pub struct ConnectRequest {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct AmendRequest {
     /// Topic key
     pub topic_key: String,
@@ -105,6 +109,7 @@ pub struct AmendRequest {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SearchRequest {
     /// Natural language search query
     pub query: String,
@@ -115,6 +120,7 @@ pub struct SearchRequest {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ExploreRequest {
     /// Topic key to explore from
     pub topic_key: String,
@@ -126,16 +132,18 @@ pub struct ExploreRequest {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PathRequest {
     /// Source topic key
-    pub from: String,
+    pub from_key: String,
     /// Target topic key
-    pub to: String,
+    pub to_key: String,
     /// Max hops (default: 5)
     pub max_depth: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct NearbyRequest {
     /// Topic key
     pub topic_key: String,
@@ -144,6 +152,7 @@ pub struct NearbyRequest {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CheckpointRequest {
     /// Session identifier
     pub session_id: String,
@@ -152,6 +161,7 @@ pub struct CheckpointRequest {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SnapshotRequest {
     /// Human-readable name
     pub name: Option<String>,
@@ -160,12 +170,14 @@ pub struct SnapshotRequest {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RestoreRequest {
     /// Snapshot name to restore from
     pub name: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ForgetRequest {
     /// Topic key to deprecate
     pub topic_key: String,
@@ -174,6 +186,7 @@ pub struct ForgetRequest {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RenameRequest {
     /// Current topic key
     pub old_key: String,
@@ -182,6 +195,7 @@ pub struct RenameRequest {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RewriteRequest {
     /// Topic key
     pub topic_key: String,
@@ -192,6 +206,7 @@ pub struct RewriteRequest {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct NewBlockRequest {
     /// Block content
     pub content: String,
@@ -200,6 +215,7 @@ pub struct NewBlockRequest {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct HistoryRequest {
     /// Filter to a specific topic (optional)
     pub topic_key: Option<String>,
@@ -210,6 +226,7 @@ pub struct HistoryRequest {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct VoiceRequest {
     /// "read" or "update"
     pub action: String,
@@ -337,8 +354,8 @@ impl CairnMcpServer {
         let result = self
             .cairn
             .connect_topics(cairn_core::ConnectParams {
-                from: req.from,
-                to: req.to,
+                from_key: req.from_key,
+                to_key: req.to_key,
                 edge_type: kind,
                 note: req.note,
                 severity: req.severity.as_deref().map(parse_severity),
@@ -415,8 +432,8 @@ impl CairnMcpServer {
         let result = self
             .cairn
             .path(cairn_core::PathParams {
-                from: req.from,
-                to: req.to,
+                from_key: req.from_key,
+                to_key: req.to_key,
                 max_depth: req.max_depth.unwrap_or(5),
             })
             .await

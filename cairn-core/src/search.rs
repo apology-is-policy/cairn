@@ -302,8 +302,8 @@ pub async fn path(db: &CairnDb, params: PathParams) -> Result<PathResult> {
     let mut visited: HashSet<String> = HashSet::new();
     let mut queue: VecDeque<(String, Vec<PathEdge>)> = VecDeque::new();
 
-    visited.insert(params.from.clone());
-    queue.push_back((params.from.clone(), vec![]));
+    visited.insert(params.from_key.clone());
+    queue.push_back((params.from_key.clone(), vec![]));
 
     while let Some((current, path_so_far)) = queue.pop_front() {
         if path_so_far.len() >= params.max_depth {
@@ -332,7 +332,7 @@ pub async fn path(db: &CairnDb, params: PathParams) -> Result<PathResult> {
                 neighbor.clone(),
             ));
 
-            if *neighbor == params.to {
+            if *neighbor == params.to_key {
                 // Found it! Build the PathResult
                 let mut steps = Vec::new();
                 for (from, edge_type, note, to) in &new_path {
@@ -741,8 +741,8 @@ mod tests {
             ops::connect(
                 db,
                 ConnectParams {
-                    from: from.into(),
-                    to: to.into(),
+                    from_key: from.into(),
+                    to_key: to.into(),
                     edge_type: kind,
                     note: note.into(),
                     severity: if kind == EdgeKind::Gotcha {
@@ -850,8 +850,8 @@ mod tests {
         let result = path(
             &db,
             PathParams {
-                from: "billing-retry".into(),
-                to: "event-bus".into(),
+                from_key: "billing-retry".into(),
+                to_key: "event-bus".into(),
                 max_depth: 5,
             },
         )
@@ -871,8 +871,8 @@ mod tests {
         let result = path(
             &db,
             PathParams {
-                from: "billing-retry".into(),
-                to: "monitoring".into(),
+                from_key: "billing-retry".into(),
+                to_key: "monitoring".into(),
                 max_depth: 5,
             },
         )
@@ -907,8 +907,8 @@ mod tests {
         let result = path(
             &db,
             PathParams {
-                from: "billing-retry".into(),
-                to: "isolated".into(),
+                from_key: "billing-retry".into(),
+                to_key: "isolated".into(),
                 max_depth: 5,
             },
         )

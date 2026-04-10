@@ -531,8 +531,8 @@ mod tests {
         ops::connect(
             &db,
             ConnectParams {
-                from: "test-topic".into(),
-                to: "other-topic".into(),
+                from_key: "test-topic".into(),
+                to_key: "other-topic".into(),
                 edge_type: EdgeKind::SeeAlso,
                 note: "related stuff".into(),
                 severity: None,
