@@ -632,6 +632,7 @@ name = "cairn-server"
 version = "0.1.0"
 dependencies = [
  "cairn-core",
+ "chrono",
  "clap",
  "libc",
  "serde",

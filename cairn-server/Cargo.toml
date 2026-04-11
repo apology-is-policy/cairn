@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 cairn-core = { path = "../cairn-core" }
+chrono = { workspace = true }
 clap = { workspace = true }
 libc = "0.2"
 serde = { workspace = true }

@@ -294,6 +294,25 @@ pub struct RenameParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeginEditorSessionParams {
+    /// Optional human-readable label for what the user is doing in this
+    /// session. Surfaced to other clients via `EditorSessionStatus` and in
+    /// the `EditorBusy` error so an agent can explain *why* it's blocked.
+    pub reason: Option<String>,
+}
+
+/// Snapshot of the daemon's editor-session state. Returned by
+/// `editor_session_status()`. `None` means no client is currently holding
+/// the lock.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EditorSessionInfo {
+    pub since: DateTime<Utc>,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action", content = "content", rename_all = "snake_case")]
 pub enum VoiceAction {
     Read,

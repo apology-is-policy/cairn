@@ -1,18 +1,37 @@
 //! cairn-server — single-process daemon that owns the Cairn DB exclusively.
 //!
 //! Listens on a Unix socket. Every request is dispatched through one
-//! `tokio::sync::Mutex<Cairn>`, so all operations are globally serialized.
-//! This is the user-facing consistency property: while one client is `prime`-ing,
-//! no other client can `learn`/`connect`/`amend`. Two MCP servers from two
-//! Claude Code instances can both connect safely.
+//! `tokio::sync::Mutex<DaemonState>`, so all operations are globally
+//! serialized. This is the user-facing consistency property: while one
+//! client is `prime`-ing, no other client can `learn`/`connect`/`amend`.
+//! Two MCP servers from two Claude Code instances can both connect safely.
+//!
+//! ## Editor sessions (v3)
+//!
+//! Beyond the basic mutex serialization, the daemon supports an *editor
+//! session* lock: a TUI client can call `BeginEditorSession` to acquire
+//! exclusive write access. While the lock is held, mutations from any
+//! other connection return `CairnError::EditorBusy` carrying the holder's
+//! `since`/`reason`. **Reads bypass the lock entirely** — `prime`,
+//! `search`, `stats`, `graph_status`, and friends keep working so an
+//! agent can continue to read context while the user is curating.
+//!
+//! The lock is per-connection. When the holder's connection drops (clean
+//! exit *or* crash), `handle_connection`'s cleanup releases it
+//! automatically. There is no heartbeat, no PID file, no stale-lock
+//! recovery — the kernel notices the dropped socket and we react.
 
 use std::os::fd::AsRawFd;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use cairn_core::rpc::{CairnRequest, CairnResponse};
-use cairn_core::{default_db_path, derive_lock_path, derive_socket_path, Cairn, CairnError};
+use cairn_core::{
+    default_db_path, derive_lock_path, derive_socket_path, Cairn, CairnError, EditorSessionInfo,
+};
+use chrono::{DateTime, Utc};
 use clap::Parser;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::unix::OwnedWriteHalf;
@@ -20,6 +39,97 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Mutex, Notify, Semaphore};
 
 const MAX_IN_FLIGHT: usize = 1024;
+
+/// Monotonic per-connection ID. Used by the editor-session lock to
+/// identify "the connection that holds the lock" across mutex acquisitions.
+static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_connection_id() -> u64 {
+    NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Combined daemon state guarded by a single async mutex. Holding both
+/// the Cairn facade and the editor-lock state under one mutex means the
+/// "check lock then dispatch mutation" sequence is atomic with respect
+/// to other clients calling `BeginEditorSession`/`EndEditorSession`.
+struct DaemonState {
+    cairn: Cairn,
+    editor: Option<EditorHolder>,
+}
+
+#[derive(Debug, Clone)]
+struct EditorHolder {
+    connection_id: u64,
+    since: DateTime<Utc>,
+    reason: Option<String>,
+}
+
+impl DaemonState {
+    fn new(cairn: Cairn) -> Self {
+        Self {
+            cairn,
+            editor: None,
+        }
+    }
+
+    /// Returns `Err(EditorBusy)` if the editor lock is held by a
+    /// connection other than `conn_id`. Returns `Ok(())` if the lock is
+    /// free or held by us.
+    fn check_editor_lock(&self, conn_id: u64) -> Result<(), CairnError> {
+        if let Some(holder) = &self.editor {
+            if holder.connection_id != conn_id {
+                return Err(CairnError::EditorBusy {
+                    since: holder.since,
+                    reason: holder.reason.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Acquire the editor lock for `conn_id`. Idempotent: if we already
+    /// hold it, just update the reason. If a different connection holds
+    /// it, return `EditorBusy`.
+    fn begin_editor(&mut self, conn_id: u64, reason: Option<String>) -> Result<(), CairnError> {
+        match &mut self.editor {
+            Some(holder) if holder.connection_id == conn_id => {
+                holder.reason = reason;
+                Ok(())
+            }
+            Some(holder) => Err(CairnError::EditorBusy {
+                since: holder.since,
+                reason: holder.reason.clone(),
+            }),
+            None => {
+                self.editor = Some(EditorHolder {
+                    connection_id: conn_id,
+                    since: Utc::now(),
+                    reason,
+                });
+                Ok(())
+            }
+        }
+    }
+
+    /// Release the editor lock if held by `conn_id`. No-op if held by
+    /// someone else or not held at all — defensive so clients can call
+    /// `EndEditorSession` on shutdown without worrying about state.
+    fn end_editor(&mut self, conn_id: u64) {
+        if let Some(holder) = &self.editor {
+            if holder.connection_id == conn_id {
+                self.editor = None;
+            }
+        }
+    }
+
+    /// Read-only snapshot of the current holder for clients to display.
+    fn editor_status(&self) -> Option<EditorSessionInfo> {
+        self.editor.as_ref().map(|h| EditorSessionInfo {
+            since: h.since,
+            reason: h.reason.clone(),
+        })
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "cairn-server", about = "Cairn knowledge graph daemon")]
@@ -68,7 +178,7 @@ async fn main() -> std::io::Result<()> {
     let cairn = Cairn::open(&db_path)
         .await
         .map_err(|e| std::io::Error::other(e.to_string()))?;
-    let cairn = Arc::new(Mutex::new(cairn));
+    let state = Arc::new(Mutex::new(DaemonState::new(cairn)));
 
     // 3. Bind the Unix socket. Stale sockets are safe to remove now because
     //    the flock guarantees no other server is running.
@@ -124,13 +234,13 @@ async fn main() -> std::io::Result<()> {
                         continue;
                     }
                 };
-                let cairn = cairn.clone();
+                let state = state.clone();
                 let permit = match in_flight.clone().acquire_owned().await {
                     Ok(p) => p,
                     Err(_) => break,
                 };
                 tokio::spawn(async move {
-                    if let Err(e) = handle_connection(stream, cairn).await {
+                    if let Err(e) = handle_connection(stream, state).await {
                         tracing::debug!("connection ended: {e}");
                     }
                     drop(permit);
@@ -151,7 +261,40 @@ async fn main() -> std::io::Result<()> {
     Ok(())
 }
 
-async fn handle_connection(stream: UnixStream, cairn: Arc<Mutex<Cairn>>) -> std::io::Result<()> {
+async fn handle_connection(
+    stream: UnixStream,
+    state: Arc<Mutex<DaemonState>>,
+) -> std::io::Result<()> {
+    let conn_id = next_connection_id();
+    tracing::debug!("connection {conn_id} accepted");
+
+    let result = handle_connection_inner(stream, state.clone(), conn_id).await;
+
+    // Cleanup: if this connection held the editor lock when it dropped
+    // (clean exit *or* crash), release it. The kernel-level socket close
+    // is what brings us here, so this doubles as the "stale lock recovery"
+    // path — there is no other one.
+    let mut guard = state.lock().await;
+    if let Some(holder) = &guard.editor {
+        if holder.connection_id == conn_id {
+            tracing::info!(
+                "connection {conn_id} dropped while holding editor lock (since {}), releasing",
+                holder.since
+            );
+            guard.editor = None;
+        }
+    }
+    drop(guard);
+
+    tracing::debug!("connection {conn_id} closed");
+    result
+}
+
+async fn handle_connection_inner(
+    stream: UnixStream,
+    state: Arc<Mutex<DaemonState>>,
+    conn_id: u64,
+) -> std::io::Result<()> {
     let (r, mut w) = stream.into_split();
     let mut reader = BufReader::new(r);
     let mut line = String::new();
@@ -171,6 +314,7 @@ async fn handle_connection(stream: UnixStream, cairn: Arc<Mutex<Cairn>>) -> std:
                     result: None,
                     error: Some(format!("decode request: {e}")),
                     error_kind: Some("other".into()),
+                    error_data: None,
                 };
                 write_response(&mut w, &resp).await?;
                 continue;
@@ -178,8 +322,8 @@ async fn handle_connection(stream: UnixStream, cairn: Arc<Mutex<Cairn>>) -> std:
         };
 
         let resp = {
-            let guard = cairn.lock().await;
-            dispatch(&guard, req).await
+            let mut guard = state.lock().await;
+            dispatch(&mut guard, conn_id, req).await
         };
         write_response(&mut w, &resp).await?;
     }
@@ -192,7 +336,62 @@ async fn write_response(w: &mut OwnedWriteHalf, resp: &CairnResponse) -> std::io
     w.flush().await
 }
 
-async fn dispatch(cairn: &Cairn, req: CairnRequest) -> CairnResponse {
+async fn dispatch(
+    state: &mut DaemonState,
+    conn_id: u64,
+    req: CairnRequest,
+) -> CairnResponse {
+    // Editor-lock gate: mutations from a connection that doesn't hold
+    // the lock are rejected with EditorBusy carrying the holder's
+    // since/reason. Reads always pass through. Editor-session control
+    // RPCs are not classified as mutations and bypass this check, so
+    // BeginEditorSession can still acquire the lock and other clients
+    // can still call EditorSessionStatus to inspect it.
+    if req.is_mutation() {
+        if let Err(e) = state.check_editor_lock(conn_id) {
+            return CairnResponse::err(&e);
+        }
+    }
+
+    // Editor-session control: handle these up front because they mutate
+    // `state.editor`, which conflicts with the `&state.cairn` borrow used
+    // by the main dispatch match below. Each arm returns directly so the
+    // borrow doesn't escape.
+    match &req {
+        CairnRequest::BeginEditorSession(p) => {
+            return match state.begin_editor(conn_id, p.reason.clone()) {
+                Ok(()) => {
+                    tracing::info!(
+                        "connection {conn_id} acquired editor lock (reason: {:?})",
+                        p.reason
+                    );
+                    CairnResponse::ok_unit()
+                }
+                Err(e) => CairnResponse::err(&e),
+            };
+        }
+        CairnRequest::EndEditorSession => {
+            let was_holder = state
+                .editor
+                .as_ref()
+                .map(|h| h.connection_id == conn_id)
+                .unwrap_or(false);
+            state.end_editor(conn_id);
+            if was_holder {
+                tracing::info!("connection {conn_id} released editor lock");
+            }
+            return CairnResponse::ok_unit();
+        }
+        CairnRequest::EditorSessionStatus => {
+            let info = state.editor_status();
+            let value = serde_json::to_value(info).unwrap_or(serde_json::Value::Null);
+            return CairnResponse::ok_value(value);
+        }
+        _ => {}
+    }
+
+    // Everything else dispatches against the Cairn facade.
+    let cairn = &state.cairn;
     use CairnRequest::*;
     let result: Result<serde_json::Value, CairnError> = match req {
         Ping => Ok(serde_json::json!("pong")),
@@ -240,6 +439,11 @@ async fn dispatch(cairn: &Cairn, req: CairnRequest) -> CairnResponse {
             .await
             .map(|(t, e)| serde_json::json!([t, e])),
         ListSnapshots => cairn.list_snapshots().map(|v| serde_json::json!(v)),
+
+        // Already handled above.
+        BeginEditorSession(_) | EndEditorSession | EditorSessionStatus => {
+            unreachable!("editor-session control RPCs handled above")
+        }
     };
 
     match result {

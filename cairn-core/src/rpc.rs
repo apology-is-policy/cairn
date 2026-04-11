@@ -17,7 +17,13 @@ use crate::types::*;
 /// - v2: `ConnectParams` and `PathParams` renamed `from`/`to` to
 ///   `from_key`/`to_key` for consistency with `Edge` and the other `*Params`
 ///   `topic_key` convention. All `*Params` types now `deny_unknown_fields`.
-pub const RPC_PROTOCOL_VERSION: u32 = 2;
+/// - v3: added `BeginEditorSession`/`EndEditorSession`/`EditorSessionStatus`
+///   request variants, the `EditorBusy` typed error, and the optional
+///   `error_data` field on `CairnResponse` for transporting structured
+///   error payloads (used by `EditorBusy` to carry `since` and `reason`).
+///   The bump is additive — old daemons reject the new variants cleanly,
+///   new daemons still understand v2 requests.
+pub const RPC_PROTOCOL_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", content = "params", rename_all = "snake_case")]
@@ -64,6 +70,69 @@ pub enum CairnRequest {
     ExportJson,
     ImportJson { json: String },
     ListSnapshots,
+
+    // Editor session control (v3)
+    BeginEditorSession(BeginEditorSessionParams),
+    EndEditorSession,
+    EditorSessionStatus,
+}
+
+impl CairnRequest {
+    /// True if this request is a *graph mutation* — i.e. it would change
+    /// state visible to other clients on a subsequent read. Used by the
+    /// daemon to decide whether the editor-session lock applies. Reads
+    /// (`prime`, `search`, `stats`, `graph_status`, `snapshot` to disk,
+    /// `export_json`, etc.) bypass the lock and stay available so an
+    /// agent can keep priming context while the user is curating.
+    ///
+    /// Editor-session control RPCs (`BeginEditorSession`, `EndEditorSession`,
+    /// `EditorSessionStatus`) are deliberately *not* mutations — they
+    /// manage the lock itself and must always be reachable.
+    pub fn is_mutation(&self) -> bool {
+        use CairnRequest::*;
+        match self {
+            // Mutations: change graph state.
+            InitDefaults { .. }
+            | Learn(_)
+            | Connect(_)
+            | Amend(_)
+            | Forget(_)
+            | Rewrite(_)
+            | Rename(_)
+            | Reset
+            | Checkpoint(_)
+            | SetVoice { .. }
+            | SetPreferences { .. }
+            | Restore(_)
+            | ImportJson { .. } => true,
+
+            // Reads: do not change graph state. `Snapshot` and `ExportJson`
+            // produce files but never modify the live graph, so they're
+            // safe under an editor lock — and useful (snapshot before
+            // risky edits).
+            Ping
+            | SchemaVersion
+            | DbPath
+            | History(_)
+            | GetTopic { .. }
+            | Search(_)
+            | Explore(_)
+            | Path(_)
+            | Nearby(_)
+            | Stats
+            | GraphView
+            | Prime(_)
+            | GraphStatus
+            | GetVoice
+            | GetPreferences
+            | Snapshot(_)
+            | ExportJson
+            | ListSnapshots => false,
+
+            // Editor-session control: always reachable, never blocked.
+            BeginEditorSession(_) | EndEditorSession | EditorSessionStatus => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,6 +145,13 @@ pub struct CairnResponse {
     pub error: Option<String>,
     /// On error: classification kind so the client can rebuild a typed `CairnError`.
     pub error_kind: Option<String>,
+    /// On error: optional structured payload that lets the client rebuild
+    /// error variants with non-string fields (currently `EditorBusy`'s
+    /// `since`/`reason`). `#[serde(default)]` so older clients/daemons
+    /// without this field still round-trip. `skip_serializing_if` keeps
+    /// the wire format clean for the common case where there's no payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_data: Option<serde_json::Value>,
 }
 
 impl CairnResponse {
@@ -85,6 +161,7 @@ impl CairnResponse {
             result: Some(value),
             error: None,
             error_kind: None,
+            error_data: None,
         }
     }
 
@@ -94,6 +171,7 @@ impl CairnResponse {
             result: Some(serde_json::Value::Null),
             error: None,
             error_kind: None,
+            error_data: None,
         }
     }
 
@@ -103,6 +181,7 @@ impl CairnResponse {
             result: None,
             error: Some(e.to_string()),
             error_kind: Some(classify(e).into()),
+            error_data: error_data(e),
         }
     }
 }
@@ -118,8 +197,22 @@ fn classify(e: &CairnError) -> &'static str {
         EmptyContent(_) => "empty_content",
         TopicKeyConflict(_) => "topic_key_conflict",
         SchemaVersionMismatch { .. } => "schema_version_mismatch",
+        EditorBusy { .. } => "editor_busy",
         Io(_) => "io",
         Other(_) => "other",
+    }
+}
+
+/// Serialize the structured fields of error variants whose information
+/// would otherwise be lost in the stringified `error` message. Currently
+/// only `EditorBusy` carries data here; other variants return `None`.
+fn error_data(e: &CairnError) -> Option<serde_json::Value> {
+    match e {
+        CairnError::EditorBusy { since, reason } => Some(serde_json::json!({
+            "since": since,
+            "reason": reason,
+        })),
+        _ => None,
     }
 }
 
@@ -224,6 +317,14 @@ mod tests {
         round_trip(CairnRequest::ExportJson);
         round_trip(CairnRequest::ImportJson { json: "{}".into() });
         round_trip(CairnRequest::ListSnapshots);
+        round_trip(CairnRequest::BeginEditorSession(BeginEditorSessionParams {
+            reason: Some("manual triage".into()),
+        }));
+        round_trip(CairnRequest::BeginEditorSession(BeginEditorSessionParams {
+            reason: None,
+        }));
+        round_trip(CairnRequest::EndEditorSession);
+        round_trip(CairnRequest::EditorSessionStatus);
     }
 
     #[test]
@@ -234,5 +335,69 @@ mod tests {
 
         let err = CairnResponse::err(&CairnError::TopicNotFound("billing".into()));
         assert_eq!(err.error_kind.as_deref(), Some("topic_not_found"));
+        assert!(err.error_data.is_none());
+    }
+
+    #[test]
+    fn editor_busy_response_carries_structured_data() {
+        let now = chrono::Utc::now();
+        let resp = CairnResponse::err(&CairnError::EditorBusy {
+            since: now,
+            reason: Some("manual triage".into()),
+        });
+        assert_eq!(resp.error_kind.as_deref(), Some("editor_busy"));
+        let data = resp.error_data.clone().expect("error_data populated");
+        assert_eq!(data["reason"], "manual triage");
+        // Round-trip through JSON to make sure it survives the wire.
+        let line = serde_json::to_string(&resp).unwrap();
+        let back: CairnResponse = serde_json::from_str(&line).unwrap();
+        let back_data = back.error_data.expect("error_data survived");
+        assert_eq!(back_data["reason"], "manual triage");
+    }
+
+    #[test]
+    fn old_response_format_without_error_data_still_decodes() {
+        // Pre-v3 daemons emit responses with no `error_data` field at all.
+        // The new client must accept them via the serde default.
+        let legacy = serde_json::json!({
+            "ok": false,
+            "result": null,
+            "error": "Topic not found: billing",
+            "error_kind": "topic_not_found",
+        });
+        let resp: CairnResponse = serde_json::from_value(legacy).unwrap();
+        assert!(!resp.ok);
+        assert!(resp.error_data.is_none());
+    }
+
+    #[test]
+    fn is_mutation_classification() {
+        // Spot-check the classifier so a future variant can't silently
+        // slip into the wrong bucket without tripping a test.
+        assert!(CairnRequest::Learn(LearnParams {
+            topic_key: "k".into(),
+            title: None,
+            summary: None,
+            content: "c".into(),
+            voice: None,
+            tags: vec![],
+            position: Position::End,
+        })
+        .is_mutation());
+        assert!(CairnRequest::Reset.is_mutation());
+        assert!(CairnRequest::ImportJson { json: "{}".into() }.is_mutation());
+        assert!(!CairnRequest::Stats.is_mutation());
+        assert!(!CairnRequest::Search(SearchParams::default()).is_mutation());
+        assert!(!CairnRequest::Snapshot(SnapshotParams {
+            name: None,
+            path: None,
+        })
+        .is_mutation());
+        assert!(!CairnRequest::ExportJson.is_mutation());
+        // Editor-session control is never a mutation — must always be reachable.
+        assert!(!CairnRequest::BeginEditorSession(BeginEditorSessionParams { reason: None })
+            .is_mutation());
+        assert!(!CairnRequest::EndEditorSession.is_mutation());
+        assert!(!CairnRequest::EditorSessionStatus.is_mutation());
     }
 }

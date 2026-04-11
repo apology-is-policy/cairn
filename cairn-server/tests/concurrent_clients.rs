@@ -239,6 +239,227 @@ async fn typed_error_round_trip() {
     assert!(matches!(err, CairnError::TopicNotFound(_)));
 }
 
+// ── Editor session tests ─────────────────────────────────────────
+
+#[tokio::test]
+async fn editor_session_blocks_other_clients_mutations_but_not_reads() {
+    let db = temp_db();
+    let _server = spawn_server(&db).await;
+
+    let editor = CairnClient::connect(&db).await.unwrap();
+    let agent = CairnClient::connect(&db).await.unwrap();
+
+    editor.init_defaults(Some("voice")).await.unwrap();
+
+    // Pre-seed a topic so the agent has something to read.
+    editor
+        .learn(LearnParams {
+            topic_key: "alpha".into(),
+            title: Some("Alpha".into()),
+            summary: Some("first".into()),
+            content: "before lock".into(),
+            voice: None,
+            tags: vec![],
+            position: Position::End,
+        })
+        .await
+        .unwrap();
+
+    // Editor acquires the lock with an explicit reason.
+    editor
+        .begin_editor_session(Some("manual triage"))
+        .await
+        .unwrap();
+
+    // Status reflects the holder.
+    let info = agent
+        .editor_session_status()
+        .await
+        .unwrap()
+        .expect("editor session active");
+    assert_eq!(info.reason.as_deref(), Some("manual triage"));
+
+    // Agent reads still work.
+    let stats = agent.stats().await.unwrap();
+    assert_eq!(stats.topics.total, 1);
+    let _ = agent
+        .prime(PrimeParams {
+            task: "anything".into(),
+            max_tokens: None,
+        })
+        .await
+        .unwrap();
+    let _ = agent.graph_status().await.unwrap();
+
+    // Agent mutations are rejected with the typed EditorBusy variant
+    // carrying the structured holder info.
+    let err = agent
+        .learn(LearnParams {
+            topic_key: "beta".into(),
+            title: Some("Beta".into()),
+            summary: Some("second".into()),
+            content: "should be rejected".into(),
+            voice: None,
+            tags: vec![],
+            position: Position::End,
+        })
+        .await
+        .unwrap_err();
+    match err {
+        CairnError::EditorBusy { reason, .. } => {
+            assert_eq!(reason.as_deref(), Some("manual triage"));
+        }
+        other => panic!("expected EditorBusy, got {other:?}"),
+    }
+
+    // The editor itself can still mutate while holding the lock.
+    editor
+        .learn(LearnParams {
+            topic_key: "gamma".into(),
+            title: Some("Gamma".into()),
+            summary: Some("written by editor".into()),
+            content: "this should land".into(),
+            voice: None,
+            tags: vec![],
+            position: Position::End,
+        })
+        .await
+        .unwrap();
+
+    // Release. Agent mutations now succeed.
+    editor.end_editor_session().await.unwrap();
+    assert!(agent.editor_session_status().await.unwrap().is_none());
+
+    agent
+        .learn(LearnParams {
+            topic_key: "delta".into(),
+            title: Some("Delta".into()),
+            summary: Some("after release".into()),
+            content: "now allowed".into(),
+            voice: None,
+            tags: vec![],
+            position: Position::End,
+        })
+        .await
+        .unwrap();
+
+    let final_stats = agent.stats().await.unwrap();
+    // alpha (pre-lock), gamma (editor during lock), delta (agent after release).
+    assert_eq!(final_stats.topics.total, 3);
+}
+
+#[tokio::test]
+async fn editor_lock_release_on_connection_drop() {
+    // The keystone-tier guarantee: if the holder's connection dies (clean
+    // exit *or* crash), the daemon releases the lock automatically. There
+    // is no other recovery path — we rely entirely on the kernel noticing
+    // the dropped socket.
+    let db = temp_db();
+    let _server = spawn_server(&db).await;
+
+    {
+        let editor = CairnClient::connect(&db).await.unwrap();
+        editor.init_defaults(Some("voice")).await.unwrap();
+        editor
+            .begin_editor_session(Some("will be dropped"))
+            .await
+            .unwrap();
+
+        // Confirm the lock is held from the daemon's perspective.
+        let observer = CairnClient::connect(&db).await.unwrap();
+        let info = observer
+            .editor_session_status()
+            .await
+            .unwrap()
+            .expect("lock held");
+        assert_eq!(info.reason.as_deref(), Some("will be dropped"));
+
+        // editor goes out of scope here → its UnixStream drops →
+        // cairn-server's read_line returns 0 → handle_connection's
+        // cleanup releases the lock.
+    }
+
+    // Give the daemon a moment to process the disconnect.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let observer = CairnClient::connect(&db).await.unwrap();
+    let status = observer.editor_session_status().await.unwrap();
+    assert!(
+        status.is_none(),
+        "lock should have been released on connection drop, but got {status:?}"
+    );
+
+    // And mutations from a fresh client work again.
+    observer
+        .learn(LearnParams {
+            topic_key: "post-drop".into(),
+            title: Some("Post Drop".into()),
+            summary: Some("written after lock release".into()),
+            content: "ok".into(),
+            voice: None,
+            tags: vec![],
+            position: Position::End,
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn editor_lock_is_idempotent_for_holder_and_no_op_release_for_others() {
+    let db = temp_db();
+    let _server = spawn_server(&db).await;
+
+    let editor = CairnClient::connect(&db).await.unwrap();
+    let other = CairnClient::connect(&db).await.unwrap();
+
+    editor.init_defaults(Some("voice")).await.unwrap();
+
+    // First Begin succeeds.
+    editor
+        .begin_editor_session(Some("first reason"))
+        .await
+        .unwrap();
+
+    // Re-Begin from the same connection updates the reason instead of erroring.
+    editor
+        .begin_editor_session(Some("updated reason"))
+        .await
+        .unwrap();
+    let info = other
+        .editor_session_status()
+        .await
+        .unwrap()
+        .expect("still held");
+    assert_eq!(info.reason.as_deref(), Some("updated reason"));
+
+    // Re-Begin with no reason clears the reason but keeps the lock.
+    editor.begin_editor_session(None).await.unwrap();
+    let info = other
+        .editor_session_status()
+        .await
+        .unwrap()
+        .expect("still held");
+    assert_eq!(info.reason, None);
+
+    // Begin from a *different* connection is rejected with EditorBusy.
+    let err = other
+        .begin_editor_session(Some("steal attempt"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, CairnError::EditorBusy { .. }));
+
+    // End from a non-holder is a silent no-op (lock stays held).
+    other.end_editor_session().await.unwrap();
+    assert!(other.editor_session_status().await.unwrap().is_some());
+
+    // End from the holder releases.
+    editor.end_editor_session().await.unwrap();
+    assert!(other.editor_session_status().await.unwrap().is_none());
+
+    // End-when-not-held is also a silent no-op.
+    editor.end_editor_session().await.unwrap();
+}
+
 #[tokio::test]
 async fn client_reconnects_after_daemon_restart() {
     // Simulates the install.sh upgrade flow: a long-lived client (e.g. a

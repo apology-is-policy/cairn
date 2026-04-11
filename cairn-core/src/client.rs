@@ -307,6 +307,35 @@ impl CairnClient {
     pub async fn list_snapshots(&self) -> Result<Vec<SnapshotResult>> {
         self.call(CairnRequest::ListSnapshots).await
     }
+
+    // ── Editor session control (v3) ──────────────────────────────
+
+    /// Acquire the exclusive editor lock on the daemon. While this client
+    /// holds the lock, *other* clients receive `CairnError::EditorBusy` on
+    /// any mutation, but reads stay available. Calling `begin_editor_session`
+    /// from a connection that already holds the lock is idempotent (the
+    /// reason is updated, no error). The lock is released by
+    /// `end_editor_session()` or automatically when this connection drops.
+    pub async fn begin_editor_session(&self, reason: Option<&str>) -> Result<()> {
+        self.call(CairnRequest::BeginEditorSession(BeginEditorSessionParams {
+            reason: reason.map(String::from),
+        }))
+        .await
+    }
+
+    /// Release the editor lock if held by this connection. No-op if this
+    /// connection isn't the holder, so it's safe to call defensively on
+    /// shutdown paths.
+    pub async fn end_editor_session(&self) -> Result<()> {
+        self.call(CairnRequest::EndEditorSession).await
+    }
+
+    /// Inspect who currently holds the editor lock, if anyone. Useful for
+    /// the TUI to show a "lock held by another session since X, reason Y"
+    /// message before attempting to acquire it.
+    pub async fn editor_session_status(&self) -> Result<Option<EditorSessionInfo>> {
+        self.call(CairnRequest::EditorSessionStatus).await
+    }
 }
 
 // ── Auto-spawn ───────────────────────────────────────────────────
@@ -458,14 +487,34 @@ impl CallError {
 // ── Error reconstruction ─────────────────────────────────────────
 
 fn reconstruct_error(resp: CairnResponse) -> CairnError {
+    let kind = resp.error_kind.clone();
+    let data = resp.error_data.clone();
     let msg = resp.error.unwrap_or_default();
-    match resp.error_kind.as_deref() {
+    match kind.as_deref() {
         Some("topic_not_found") => CairnError::TopicNotFound(msg),
         Some("snapshot_not_found") => CairnError::SnapshotNotFound(msg),
         Some("invalid_edge_type") => CairnError::InvalidEdgeType(msg),
         Some("empty_content") => CairnError::EmptyContent(msg),
         Some("topic_key_conflict") => CairnError::TopicKeyConflict(msg),
         Some("db") => CairnError::Db(msg),
+        Some("editor_busy") => {
+            // Reconstruct from the structured payload if it's there.
+            // If it isn't (e.g. talking to a daemon that for some reason
+            // didn't include it), fall back to Other so the user still
+            // sees the message.
+            if let Some(d) = data {
+                if let (Some(since), reason) = (
+                    d.get("since")
+                        .and_then(|v| serde_json::from_value(v.clone()).ok()),
+                    d.get("reason")
+                        .and_then(|v| serde_json::from_value(v.clone()).ok())
+                        .unwrap_or(None),
+                ) {
+                    return CairnError::EditorBusy { since, reason };
+                }
+            }
+            CairnError::Other(msg)
+        }
         // BlockNotFound and SchemaVersionMismatch carry multiple fields that
         // don't survive the simple wire format. Display string is preserved.
         _ => CairnError::Other(msg),
