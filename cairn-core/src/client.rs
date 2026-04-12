@@ -427,6 +427,13 @@ fn spawn_server(db_path: &Path) -> Result<()> {
 }
 
 fn find_server_binary() -> Result<PathBuf> {
+    // Allow override for tests and custom installations.
+    if let Ok(path) = std::env::var("CAIRN_SERVER_BIN") {
+        let p = PathBuf::from(path);
+        if p.exists() {
+            return Ok(p);
+        }
+    }
     if let Some(path) = which("cairn-server") {
         return Ok(path);
     }

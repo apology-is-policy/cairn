@@ -467,6 +467,11 @@ async fn client_reconnects_after_daemon_restart() {
     // SIGTERMed and replaced, and the client's next call should
     // transparently reconnect to the new daemon instead of bubbling a
     // BrokenPipe error to the user.
+
+    // Tell the client's auto-spawn where to find cairn-server (it's not
+    // on PATH in CI — only in the cargo target dir).
+    std::env::set_var("CAIRN_SERVER_BIN", server_bin());
+
     let db = temp_db();
     let mut server_a = spawn_server(&db).await;
 
