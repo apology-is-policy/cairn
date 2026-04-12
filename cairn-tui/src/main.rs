@@ -1046,55 +1046,75 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                     });
                 } else if let Some(detail) = &app.caches.detail {
                     let topic_key = detail.topic.key.clone();
-                    let blocks: Vec<(String, String)> = detail
-                        .topic
-                        .blocks
-                        .iter()
-                        .map(|b| {
-                            let preview = b
-                                .content
-                                .lines()
-                                .next()
-                                .unwrap_or("")
-                                .chars()
-                                .take(60)
-                                .collect::<String>();
-                            (b.id.clone(), preview)
-                        })
-                        .collect();
-                    match blocks.len() {
-                        0 => {
-                            app.overlay = Some(Overlay::Notification {
-                                message: "No blocks to amend in this topic".into(),
-                                is_error: true,
-                            });
+
+                    // If the right pane has a specific block selected, skip
+                    // the picker and open the editor directly for that block.
+                    let preselected_block_id = if app.focus == Focus::Right {
+                        match app.selected_detail_element() {
+                            Some(DetailElement::Block { block_id, .. }) => Some(block_id),
+                            _ => None,
                         }
-                        1 => {
-                            // Skip the picker — go straight to the editor.
-                            let block = &detail.topic.blocks[0];
-                            let lines = soft_wrap(&block.content, 76);
-                            let mut textarea = tui_textarea::TextArea::new(lines);
-                            textarea.set_cursor_line_style(Style::default());
-                            textarea.set_style(Style::default().fg(Color::White));
-                            app.overlay = Some(Overlay::TextInput {
-                                title: format!(
-                                    "Amend block {} in {}",
-                                    block.id, topic_key
-                                ),
-                                textarea: Box::new(textarea),
-                                purpose: TextInputPurpose::AmendBlock {
-                                    topic_key,
-                                    block_id: block.id.clone(),
-                                },
-                            });
+                    } else {
+                        None
+                    };
+
+                    // Find the block to edit: preselected, or single-block
+                    // shortcut, or picker for 2+.
+                    let target_block = preselected_block_id.and_then(|id| {
+                        detail.topic.blocks.iter().find(|b| b.id == id)
+                    }).or_else(|| {
+                        if detail.topic.blocks.len() == 1 {
+                            Some(&detail.topic.blocks[0])
+                        } else {
+                            None
                         }
-                        _ => {
-                            app.overlay = Some(Overlay::BlockPicker {
+                    });
+
+                    if detail.topic.blocks.is_empty() {
+                        app.overlay = Some(Overlay::Notification {
+                            message: "No blocks to amend in this topic".into(),
+                            is_error: true,
+                        });
+                    } else if let Some(block) = target_block {
+                        // Direct to editor — skip the picker.
+                        let block = block.clone();
+                        let lines = soft_wrap(&block.content, 76);
+                        let mut textarea = tui_textarea::TextArea::new(lines);
+                        textarea.set_cursor_line_style(Style::default());
+                        textarea.set_style(Style::default().fg(Color::White));
+                        app.overlay = Some(Overlay::TextInput {
+                            title: format!(
+                                "Amend block {} in {}",
+                                block.id, topic_key
+                            ),
+                            textarea: Box::new(textarea),
+                            purpose: TextInputPurpose::AmendBlock {
                                 topic_key,
-                                blocks,
-                                selected: 0,
-                            });
-                        }
+                                block_id: block.id.clone(),
+                            },
+                        });
+                    } else {
+                        let blocks: Vec<(String, String)> = detail
+                            .topic
+                            .blocks
+                            .iter()
+                            .map(|b| {
+                                let preview = b
+                                    .content
+                                    .lines()
+                                    .next()
+                                    .unwrap_or("")
+                                    .chars()
+                                    .take(60)
+                                    .collect::<String>();
+                                (b.id.clone(), preview)
+                            })
+                            .collect();
+                        app.overlay = Some(Overlay::BlockPicker {
+                            topic_key,
+                            blocks,
+                            selected: 0,
+                        });
                     }
                 } else {
                     app.overlay = Some(Overlay::Notification {
@@ -1241,7 +1261,51 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                 if !app.edit_mode {
                     notify_err(app, "Enter edit mode first (press e)".into());
                 } else if let Some(detail) = &app.caches.detail {
-                    if detail.explore.edges.is_empty() {
+                    // If the right pane has a specific edge selected, remove
+                    // it directly without the picker.
+                    let preselected = if app.focus == Focus::Right {
+                        match app.selected_detail_element() {
+                            Some(DetailElement::Edge {
+                                idx: _,
+                                from,
+                                to,
+                                edge_type,
+                            }) => Some((from, to, edge_type)),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+
+                    if let Some((from, to, edge_type)) = preselected {
+                        let kind = cairn_core::EdgeKind::from_table_name(&edge_type);
+                        match kind {
+                            Some(kind) => match client
+                                .disconnect(cairn_core::DisconnectParams {
+                                    from_key: from,
+                                    to_key: to,
+                                    edge_type: kind,
+                                })
+                                .await
+                            {
+                                Ok(r) => {
+                                    notify_ok(
+                                        app,
+                                        format!(
+                                            "{} {} edge: {} → {}",
+                                            r.action, r.edge, r.from, r.to
+                                        ),
+                                    );
+                                    app.caches = TopicCaches::default();
+                                    app.fetch_active_tab(client).await;
+                                }
+                                Err(e) => notify_err(app, format!("Disconnect failed: {e}")),
+                            },
+                            None => {
+                                notify_err(app, format!("Unknown edge type: {edge_type}"))
+                            }
+                        }
+                    } else if detail.explore.edges.is_empty() {
                         notify_err(app, "No edges to remove".into());
                     } else {
                         let edges: Vec<(String, String, String, String)> = detail
@@ -2184,6 +2248,18 @@ fn unwrap_soft(lines: &[String]) -> String {
     result
 }
 
+/// Compute scroll offset so that `selected` is visible within `viewport_height` rows.
+fn scroll_offset(selected: usize, viewport_height: usize) -> usize {
+    if viewport_height == 0 {
+        return 0;
+    }
+    if selected < viewport_height {
+        0
+    } else {
+        selected - viewport_height + 1
+    }
+}
+
 fn notify_ok(app: &mut App, message: String) {
     app.overlay = Some(Overlay::Notification {
         message,
@@ -2310,10 +2386,13 @@ fn draw_overlay(f: &mut Frame, app: &App, area: Rect) {
                 inner.height.saturating_sub(1),
             );
 
+            let vh = list_area.height as usize;
+            let scroll = scroll_offset(*selected, vh);
             let items: Vec<ListItem> = matches
                 .iter()
                 .enumerate()
-                .take(list_area.height as usize)
+                .skip(scroll)
+                .take(vh)
                 .map(|(i, (_, cmd))| {
                     let mut spans = vec![
                         Span::styled(
@@ -2476,10 +2555,13 @@ fn draw_overlay(f: &mut Frame, app: &App, area: Rect) {
             let inner = block.inner(dialog_area);
             f.render_widget(block, dialog_area);
 
+            let vh = inner.height as usize;
+            let scroll = scroll_offset(*selected, vh);
             let items: Vec<ListItem> = blocks
                 .iter()
                 .enumerate()
-                .take(inner.height as usize)
+                .skip(scroll)
+                .take(vh)
                 .map(|(i, (_id, preview))| {
                     let style = if i == *selected {
                         Style::default()
@@ -2522,10 +2604,13 @@ fn draw_overlay(f: &mut Frame, app: &App, area: Rect) {
             let inner = block.inner(dialog_area);
             f.render_widget(block, dialog_area);
 
+            let vh = inner.height as usize;
+            let scroll = scroll_offset(*selected, vh);
             let list_items: Vec<ListItem> = items
                 .iter()
                 .enumerate()
-                .take(inner.height as usize)
+                .skip(scroll)
+                .take(vh)
                 .map(|(i, item)| {
                     let style = if i == *selected {
                         Style::default()
@@ -2561,10 +2646,13 @@ fn draw_overlay(f: &mut Frame, app: &App, area: Rect) {
             let inner = block.inner(dialog_area);
             f.render_widget(block, dialog_area);
 
+            let vh = inner.height as usize;
+            let scroll = scroll_offset(*selected, vh);
             let items: Vec<ListItem> = edges
                 .iter()
                 .enumerate()
-                .take(inner.height as usize)
+                .skip(scroll)
+                .take(vh)
                 .map(|(i, (from, to, etype, note))| {
                     let style = if i == *selected {
                         Style::default()
@@ -2614,10 +2702,13 @@ fn draw_overlay(f: &mut Frame, app: &App, area: Rect) {
             let inner = block.inner(dialog_area);
             f.render_widget(block, dialog_area);
 
+            let vh = inner.height as usize;
+            let scroll = scroll_offset(*selected, vh);
             let items: Vec<ListItem> = EDGE_TYPES
                 .iter()
                 .enumerate()
-                .take(inner.height as usize)
+                .skip(scroll)
+                .take(vh)
                 .map(|(i, (name, desc))| {
                     let style = if i == *selected {
                         Style::default()
