@@ -129,6 +129,32 @@ enum Mode {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+enum Focus {
+    Left,
+    Right,
+}
+
+/// A selectable element in the right pane's detail view. Derived from
+/// the cached Detail on every render — not persisted.
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+enum DetailElement {
+    Title,
+    Tags,
+    Summary,
+    Block {
+        idx: usize,
+        block_id: String,
+    },
+    Edge {
+        idx: usize,
+        from: String,
+        to: String,
+        edge_type: String,
+    },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum DetailTab {
     Detail,
     Neighbors,
@@ -144,6 +170,7 @@ impl DetailTab {
         }
     }
 
+    #[allow(dead_code)]
     fn next(self) -> Self {
         match self {
             Self::Detail => Self::Neighbors,
@@ -195,6 +222,13 @@ struct App {
     caches: TopicCaches,
 
     // ── Edit mode ────────────────────────────────────────────────
+    // ── Pane focus ────────────────────────────────────────────────
+    /// Which pane has keyboard focus. Tab toggles.
+    focus: Focus,
+    /// Selected element index in the right pane's detail view.
+    detail_selected: usize,
+
+    // ── Edit mode ────────────────────────────────────────────────
     /// True while this client holds the daemon's editor-session lock.
     /// When set, the header shows `[EDIT MODE]` in red, the footer shows
     /// editing key hints, and Esc exits edit mode (instead of quitting).
@@ -228,6 +262,8 @@ impl App {
             search_active: false,
             tab: DetailTab::Detail,
             caches: TopicCaches::default(),
+            focus: Focus::Left,
+            detail_selected: 0,
             edit_mode: false,
             overlay: None,
         }
@@ -349,6 +385,41 @@ impl App {
                 self.caches.error = Some(format!("refresh: {e}"));
             }
         }
+    }
+
+    /// Derive the selectable elements from the cached detail view.
+    fn detail_elements(&self) -> Vec<DetailElement> {
+        let Some(d) = &self.caches.detail else {
+            return vec![];
+        };
+        let mut elems = vec![DetailElement::Title];
+        if !d.topic.tags.is_empty() {
+            elems.push(DetailElement::Tags);
+        }
+        if !d.topic.summary.is_empty() {
+            elems.push(DetailElement::Summary);
+        }
+        for (i, block) in d.topic.blocks.iter().enumerate() {
+            elems.push(DetailElement::Block {
+                idx: i,
+                block_id: block.id.clone(),
+            });
+        }
+        for (i, edge) in d.explore.edges.iter().enumerate() {
+            elems.push(DetailElement::Edge {
+                idx: i,
+                from: edge.from.clone(),
+                to: edge.to.clone(),
+                edge_type: edge.edge_type.clone(),
+            });
+        }
+        elems
+    }
+
+    /// Get the currently selected detail element, if any.
+    fn selected_detail_element(&self) -> Option<DetailElement> {
+        let elems = self.detail_elements();
+        elems.into_iter().nth(self.detail_selected)
     }
 
     async fn fetch_active_tab(&mut self, client: &CairnClient) {
@@ -483,6 +554,11 @@ enum Overlay {
         edges: Vec<(String, String, String, String)>, // (from, to, edge_type, note)
         selected: usize,
     },
+    /// Context-sensitive action menu opened by Enter on a selected element.
+    ContextMenu {
+        items: Vec<ContextMenuItem>,
+        selected: usize,
+    },
     /// Edge type picker — select which edge type to create.
     EdgeTypePicker {
         from_key: String,
@@ -533,6 +609,12 @@ enum LineInputPurpose {
     EditTags {
         topic_key: String,
     },
+}
+
+#[derive(Clone)]
+struct ContextMenuItem {
+    label: String,
+    action: Action,
 }
 
 /// Edge types for the picker. Matches cairn_core::EdgeKind::ALL.
@@ -797,7 +879,7 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
 
         // ── Normal key dispatch ──────────────────────────────────
         let action = dispatched_action.unwrap_or_else(|| match app.mode {
-            Mode::Browse => handle_browse_key(key.code, key.modifiers, app.edit_mode),
+            Mode::Browse => handle_browse_key(key.code, key.modifiers, app.edit_mode, app.focus),
             Mode::Filter => handle_text_key(key.code, TextTarget::Filter),
             Mode::Search => handle_text_key(key.code, TextTarget::Search),
         });
@@ -882,20 +964,37 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                 }
                 Mode::Browse => {}
             },
-            Action::Move(delta) => {
-                app.move_selection(delta);
-                app.on_selection_changed(client).await;
-            }
-            Action::Jump(j) => {
-                app.jump_to(j);
-                app.on_selection_changed(client).await;
-            }
+            Action::Move(delta) => match app.focus {
+                Focus::Left => {
+                    app.move_selection(delta);
+                    app.on_selection_changed(client).await;
+                }
+                Focus::Right => {
+                    let count = app.detail_elements().len();
+                    if count > 0 {
+                        let cur = app.detail_selected as isize;
+                        app.detail_selected =
+                            (cur + delta).rem_euclid(count as isize) as usize;
+                    }
+                }
+            },
+            Action::Jump(j) => match app.focus {
+                Focus::Left => {
+                    app.jump_to(j);
+                    app.on_selection_changed(client).await;
+                }
+                Focus::Right => {
+                    let count = app.detail_elements().len();
+                    if count > 0 {
+                        app.detail_selected = match j {
+                            ListJump::First => 0,
+                            ListJump::Last => count - 1,
+                        };
+                    }
+                }
+            },
             Action::SwitchTab(t) => {
                 app.tab = t;
-                app.fetch_active_tab(client).await;
-            }
-            Action::NextTab => {
-                app.tab = app.tab.next();
                 app.fetch_active_tab(client).await;
             }
             Action::PrevTab => {
@@ -915,6 +1014,23 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
             }
             Action::Refresh => {
                 app.refresh(client).await;
+            }
+            Action::ToggleFocus => {
+                app.focus = match app.focus {
+                    Focus::Left => Focus::Right,
+                    Focus::Right => Focus::Left,
+                };
+            }
+            Action::OpenContextMenu => {
+                let items = build_context_menu(app);
+                if items.is_empty() {
+                    // No contextual actions — fall through silently.
+                } else {
+                    app.overlay = Some(Overlay::ContextMenu {
+                        items,
+                        selected: 0,
+                    });
+                }
             }
             Action::OpenPalette => {
                 app.overlay = Some(Overlay::CommandPalette {
@@ -1253,7 +1369,6 @@ enum Action {
     Move(isize),
     Jump(ListJump),
     SwitchTab(DetailTab),
-    NextTab,
     PrevTab,
     /// Show the edit-mode confirmation dialog.
     RequestEditMode,
@@ -1285,6 +1400,10 @@ enum Action {
     MoveBlockUp,
     /// Move a block down within the selected topic.
     MoveBlockDown,
+    /// Toggle focus between left and right panes.
+    ToggleFocus,
+    /// Open context menu for the selected element.
+    OpenContextMenu,
 }
 
 #[derive(Clone, Copy)]
@@ -1293,24 +1412,36 @@ enum TextTarget {
     Search,
 }
 
-fn handle_browse_key(code: KeyCode, mods: KeyModifiers, edit_mode: bool) -> Action {
+fn handle_browse_key(code: KeyCode, mods: KeyModifiers, edit_mode: bool, focus: Focus) -> Action {
     match code {
+        // Global keys (work in both panes)
         KeyCode::Char('q') => Action::Quit,
         KeyCode::Esc if edit_mode => Action::ExitEditMode,
         KeyCode::Esc => Action::Quit,
-        KeyCode::Char('j') | KeyCode::Down => Action::Move(1),
-        KeyCode::Char('k') | KeyCode::Up => Action::Move(-1),
-        KeyCode::Char('g') | KeyCode::Home => Action::Jump(ListJump::First),
-        KeyCode::Char('G') | KeyCode::End => Action::Jump(ListJump::Last),
+        KeyCode::Tab => Action::ToggleFocus,
         KeyCode::Char('/') => Action::EnterFilter,
         KeyCode::Char('?') => Action::EnterSearch,
         KeyCode::Char('1') => Action::SwitchTab(DetailTab::Detail),
         KeyCode::Char('2') => Action::SwitchTab(DetailTab::Neighbors),
         KeyCode::Char('3') => Action::SwitchTab(DetailTab::History),
-        KeyCode::Tab => Action::NextTab,
         KeyCode::BackTab => Action::PrevTab,
-        KeyCode::Char('l') if !mods.contains(KeyModifiers::CONTROL) => Action::NextTab,
-        KeyCode::Char('h') if !mods.contains(KeyModifiers::CONTROL) => Action::PrevTab,
+        KeyCode::Char('l') if !mods.contains(KeyModifiers::CONTROL) && focus == Focus::Left => {
+            Action::ToggleFocus
+        }
+        KeyCode::Char('h') if !mods.contains(KeyModifiers::CONTROL) && focus == Focus::Right => {
+            Action::ToggleFocus
+        }
+        KeyCode::Char('R') => Action::Refresh,
+        KeyCode::Char(':') => Action::OpenPalette,
+        KeyCode::Enter => Action::OpenContextMenu,
+
+        // Navigation (routed by focus)
+        KeyCode::Char('j') | KeyCode::Down => Action::Move(1),
+        KeyCode::Char('k') | KeyCode::Up => Action::Move(-1),
+        KeyCode::Char('g') | KeyCode::Home => Action::Jump(ListJump::First),
+        KeyCode::Char('G') | KeyCode::End => Action::Jump(ListJump::Last),
+
+        // Edit-mode keys
         KeyCode::Char('e') if edit_mode => Action::AmendBlock,
         KeyCode::Char('r') if edit_mode => Action::RenameTopic,
         KeyCode::Char('d') if edit_mode => Action::ForgetTopic,
@@ -1322,8 +1453,6 @@ fn handle_browse_key(code: KeyCode, mods: KeyModifiers, edit_mode: bool) -> Acti
         KeyCode::Char('K') if edit_mode => Action::MoveBlockUp,
         KeyCode::Char('J') if edit_mode => Action::MoveBlockDown,
         KeyCode::Char('e') => Action::RequestEditMode,
-        KeyCode::Char('R') => Action::Refresh,
-        KeyCode::Char(':') => Action::OpenPalette,
         _ => Action::None,
     }
 }
@@ -1336,6 +1465,111 @@ fn handle_text_key(code: KeyCode, _target: TextTarget) -> Action {
         KeyCode::Char(c) => Action::TextPush(c),
         _ => Action::None,
     }
+}
+
+/// Build context-menu items based on the currently focused pane and
+/// selected element. Returns an empty vec if nothing is actionable.
+fn build_context_menu(app: &App) -> Vec<ContextMenuItem> {
+    let mut items = Vec::new();
+
+    match app.focus {
+        Focus::Left => {
+            // Left pane: topic-level actions.
+            if app.selected_key().is_some() {
+                if app.edit_mode {
+                    items.push(ContextMenuItem {
+                        label: "Amend block".into(),
+                        action: Action::AmendBlock,
+                    });
+                    items.push(ContextMenuItem {
+                        label: "Rename topic".into(),
+                        action: Action::RenameTopic,
+                    });
+                    items.push(ContextMenuItem {
+                        label: "Forget topic".into(),
+                        action: Action::ForgetTopic,
+                    });
+                    items.push(ContextMenuItem {
+                        label: "Edit tags".into(),
+                        action: Action::EditTags,
+                    });
+                    items.push(ContextMenuItem {
+                        label: "Add edge".into(),
+                        action: Action::AddEdge,
+                    });
+                    items.push(ContextMenuItem {
+                        label: "Remove edge".into(),
+                        action: Action::RemoveEdge,
+                    });
+                }
+                // Read-only actions always available.
+                items.push(ContextMenuItem {
+                    label: "Explore (switch to detail)".into(),
+                    action: Action::SwitchTab(DetailTab::Detail),
+                });
+                items.push(ContextMenuItem {
+                    label: "Neighbors".into(),
+                    action: Action::SwitchTab(DetailTab::Neighbors),
+                });
+                items.push(ContextMenuItem {
+                    label: "History".into(),
+                    action: Action::SwitchTab(DetailTab::History),
+                });
+            }
+        }
+        Focus::Right => {
+            // Right pane: element-level actions based on selected element.
+            if let Some(elem) = app.selected_detail_element() {
+                match elem {
+                    DetailElement::Title => {
+                        if app.edit_mode {
+                            items.push(ContextMenuItem {
+                                label: "Rename topic".into(),
+                                action: Action::RenameTopic,
+                            });
+                        }
+                    }
+                    DetailElement::Tags => {
+                        if app.edit_mode {
+                            items.push(ContextMenuItem {
+                                label: "Edit tags".into(),
+                                action: Action::EditTags,
+                            });
+                        }
+                    }
+                    DetailElement::Summary => {
+                        // No edit action for summary yet — it's auto-generated.
+                    }
+                    DetailElement::Block { .. } => {
+                        if app.edit_mode {
+                            items.push(ContextMenuItem {
+                                label: "Amend this block".into(),
+                                action: Action::AmendBlock,
+                            });
+                            items.push(ContextMenuItem {
+                                label: "Move block up".into(),
+                                action: Action::MoveBlockUp,
+                            });
+                            items.push(ContextMenuItem {
+                                label: "Move block down".into(),
+                                action: Action::MoveBlockDown,
+                            });
+                        }
+                    }
+                    DetailElement::Edge { .. } => {
+                        if app.edit_mode {
+                            items.push(ContextMenuItem {
+                                label: "Remove this edge".into(),
+                                action: Action::RemoveEdge,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    items
 }
 
 async fn handle_overlay_key(
@@ -1680,6 +1914,35 @@ async fn handle_overlay_key(
                     buffer,
                     purpose,
                 });
+                OverlayResult::Consumed
+            }
+        },
+        Overlay::ContextMenu {
+            items,
+            mut selected,
+        } => match key.code {
+            KeyCode::Esc => OverlayResult::Consumed,
+            KeyCode::Enter => {
+                if let Some(item) = items.get(selected) {
+                    OverlayResult::Dispatch(item.action)
+                } else {
+                    OverlayResult::Consumed
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if !items.is_empty() {
+                    selected = (selected + 1).min(items.len() - 1);
+                }
+                app.overlay = Some(Overlay::ContextMenu { items, selected });
+                OverlayResult::Consumed
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                selected = selected.saturating_sub(1);
+                app.overlay = Some(Overlay::ContextMenu { items, selected });
+                OverlayResult::Consumed
+            }
+            _ => {
+                app.overlay = Some(Overlay::ContextMenu { items, selected });
                 OverlayResult::Consumed
             }
         },
@@ -2242,6 +2505,45 @@ fn draw_overlay(f: &mut Frame, app: &App, area: Rect) {
             let list = List::new(items).style(Style::default().bg(Color::Black));
             f.render_widget(list, inner);
         }
+        Overlay::ContextMenu { items, selected } => {
+            let list_height = items.len().min(12) as u16;
+            let dialog_height = (list_height + 2).min(area.height.saturating_sub(4));
+            let dialog_width = 40u16.min(area.width.saturating_sub(4));
+            let x = (area.width.saturating_sub(dialog_width)) / 2;
+            let y = (area.height.saturating_sub(dialog_height)) / 2;
+            let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
+
+            f.render_widget(Clear, dialog_area);
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan))
+                .title(" Actions ")
+                .style(Style::default().bg(Color::Black));
+            let inner = block.inner(dialog_area);
+            f.render_widget(block, dialog_area);
+
+            let list_items: Vec<ListItem> = items
+                .iter()
+                .enumerate()
+                .take(inner.height as usize)
+                .map(|(i, item)| {
+                    let style = if i == *selected {
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::White)
+                    };
+                    ListItem::new(Line::from(Span::styled(
+                        format!(" {} ", item.label),
+                        style,
+                    )))
+                })
+                .collect();
+            let list = List::new(list_items).style(Style::default().bg(Color::Black));
+            f.render_widget(list, inner);
+        }
         Overlay::EdgePicker { edges, selected } => {
             let list_height = edges.len().min(12) as u16;
             let dialog_height = (list_height + 2).min(area.height.saturating_sub(4));
@@ -2455,8 +2757,18 @@ fn draw_topic_list(f: &mut Frame, area: Rect, app: &App) {
         }
     };
 
+    let border_style = if app.focus == Focus::Left {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(title))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .border_style(border_style),
+        )
         .highlight_style(
             Style::default()
                 .bg(Color::DarkGray)
@@ -2470,19 +2782,36 @@ fn draw_topic_list(f: &mut Frame, area: Rect, app: &App) {
 
 fn draw_detail(f: &mut Frame, area: Rect, app: &App) {
     let title = tab_title(app);
+    let border_style = if app.focus == Focus::Right {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
 
     if let Some(err) = &app.caches.error {
         let p = Paragraph::new(format!("error: {err}"))
             .style(Style::default().fg(Color::Red))
-            .block(Block::default().borders(Borders::ALL).title(title))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(title)
+                    .border_style(border_style),
+            )
             .wrap(Wrap { trim: false });
         f.render_widget(p, area);
         return;
     }
 
+    // Pass the selected element index for highlighting when focused.
+    let sel = if app.focus == Focus::Right && app.tab == DetailTab::Detail {
+        Some(app.detail_selected)
+    } else {
+        None
+    };
+
     let lines = match app.tab {
         DetailTab::Detail => match &app.caches.detail {
-            Some(d) => detail_lines(d),
+            Some(d) => detail_lines(d, sel),
             None => placeholder_lines(app),
         },
         DetailTab::Neighbors => match &app.caches.nearby {
@@ -2496,7 +2825,12 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App) {
     };
 
     let p = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).title(title))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .border_style(border_style),
+        )
         .wrap(Wrap { trim: false });
     f.render_widget(p, area);
 }
@@ -2540,15 +2874,25 @@ fn placeholder_lines(app: &App) -> Vec<Line<'static>> {
     ))]
 }
 
-fn detail_lines(detail: &Detail) -> Vec<Line<'static>> {
+fn detail_lines(detail: &Detail, selected_elem: Option<usize>) -> Vec<Line<'static>> {
     let t = &detail.topic;
     let mut lines: Vec<Line> = Vec::new();
+    let mut elem_idx: usize = 0; // Tracks which DetailElement we're rendering.
 
-    // Title line
-    let mut header_spans = vec![Span::styled(
-        t.title.clone(),
-        Style::default().add_modifier(Modifier::BOLD),
-    )];
+    let sel_bg = Style::default().bg(Color::DarkGray);
+    let is_sel = |idx: usize| -> bool {
+        selected_elem.map(|s| s == idx).unwrap_or(false)
+    };
+
+    // ── Element 0: Title ──
+    let marker = if is_sel(elem_idx) { "▌ " } else { "  " };
+    let mut header_spans = vec![
+        Span::styled(marker, if is_sel(elem_idx) { sel_bg } else { Style::default() }),
+        Span::styled(
+            t.title.clone(),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+    ];
     if t.deprecated {
         header_spans.push(Span::raw("  "));
         header_spans.push(Span::styled(
@@ -2557,11 +2901,12 @@ fn detail_lines(detail: &Detail) -> Vec<Line<'static>> {
         ));
     }
     lines.push(Line::from(header_spans));
+    elem_idx += 1;
 
-    // Metadata
+    // Metadata (not a selectable element — no elem_idx bump)
     lines.push(Line::from(Span::styled(
         format!(
-            "updated {}  ·  created {}  ·  {} block(s)",
+            "  updated {}  ·  created {}  ·  {} block(s)",
             t.updated_at.format("%Y-%m-%d %H:%M"),
             t.created_at.format("%Y-%m-%d"),
             t.blocks.len()
@@ -2569,47 +2914,77 @@ fn detail_lines(detail: &Detail) -> Vec<Line<'static>> {
         Style::default().fg(Color::DarkGray),
     )));
 
+    // ── Element: Tags (only if present) ──
     if !t.tags.is_empty() {
-        lines.push(Line::from(Span::styled(
-            format!("tags: {}", t.tags.join(", ")),
-            Style::default().fg(Color::DarkGray),
-        )));
+        let marker = if is_sel(elem_idx) { "▌ " } else { "  " };
+        lines.push(Line::from(vec![
+            Span::styled(marker, if is_sel(elem_idx) { sel_bg } else { Style::default() }),
+            Span::styled(
+                format!("tags: {}", t.tags.join(", ")),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
+        elem_idx += 1;
     }
     lines.push(Line::from(""));
 
-    // Summary
-    lines.push(Line::from(Span::styled(
-        t.summary.clone(),
-        Style::default().add_modifier(Modifier::ITALIC),
-    )));
+    // ── Element: Summary ──
+    if !t.summary.is_empty() {
+        let marker = if is_sel(elem_idx) { "▌ " } else { "  " };
+        lines.push(Line::from(vec![
+            Span::styled(marker, if is_sel(elem_idx) { sel_bg } else { Style::default() }),
+            Span::styled(
+                t.summary.clone(),
+                Style::default().add_modifier(Modifier::ITALIC),
+            ),
+        ]));
+        elem_idx += 1;
+    }
     lines.push(Line::from(""));
 
-    // Blocks
+    // ── Elements: Blocks ──
     for (i, block) in t.blocks.iter().enumerate() {
+        let marker = if is_sel(elem_idx) { "▌ " } else { "  " };
+        let header_style = if is_sel(elem_idx) {
+            Style::default().fg(Color::Yellow).bg(Color::DarkGray)
+        } else {
+            Style::default().fg(Color::Yellow)
+        };
         lines.push(Line::from(vec![
-            Span::styled(
-                format!("── block {} ", i + 1),
-                Style::default().fg(Color::Yellow),
-            ),
+            Span::styled(marker, if is_sel(elem_idx) { sel_bg } else { Style::default() }),
+            Span::styled(format!("── block {} ", i + 1), header_style),
             Span::styled(
                 format!("[{}]", block.id),
                 Style::default().fg(Color::DarkGray),
             ),
         ]));
         for line in block.content.lines() {
-            lines.push(Line::from(line.to_string()));
+            let prefix = if is_sel(elem_idx) { "▌ " } else { "  " };
+            lines.push(Line::from(vec![
+                Span::styled(prefix, if is_sel(elem_idx) { sel_bg } else { Style::default() }),
+                Span::raw(line.to_string()),
+            ]));
         }
         lines.push(Line::from(""));
+        elem_idx += 1;
     }
 
-    // Edges
+    // ── Elements: Edges ──
     if !detail.explore.edges.is_empty() {
         lines.push(Line::from(Span::styled(
-            "── edges ─────────────────────",
+            "  ── edges ─────────────────────",
             Style::default().fg(Color::Yellow),
         )));
         for edge in &detail.explore.edges {
-            lines.push(edge_line(&t.key, edge));
+            let marker = if is_sel(elem_idx) { "▌ " } else { "  " };
+            let base = edge_line(&t.key, edge);
+            let mut spans = vec![Span::styled(
+                marker,
+                if is_sel(elem_idx) { sel_bg } else { Style::default() },
+            )];
+            spans.extend(base.spans);
+            lines.push(Line::from(spans));
+            elem_idx += 1;
         }
     }
 
@@ -2722,23 +3097,23 @@ fn edge_line(self_key: &str, edge: &EdgeSummary) -> Line<'static> {
 fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
     let spans = match app.mode {
         Mode::Browse if app.edit_mode => vec![
-            key_hint("j/k", "move"),
-            key_hint("h/l/tab", "tabs"),
+            key_hint("j/k", "navigate"),
+            key_hint("tab", "switch pane"),
+            key_hint("enter", "actions"),
             key_hint(":", "commands"),
             key_hint("/", "filter"),
-            key_hint("?", "search"),
             key_hint("R", "refresh"),
             key_hint("esc", "exit edit"),
             key_hint("q", "quit"),
         ],
         Mode::Browse => vec![
-            key_hint("j/k", "move"),
-            key_hint("h/l/tab", "tabs"),
+            key_hint("j/k", "navigate"),
+            key_hint("tab", "switch pane"),
+            key_hint("enter", "actions"),
             key_hint(":", "commands"),
             key_hint("/", "filter"),
             key_hint("?", "search"),
             key_hint("e", "edit mode"),
-            key_hint("R", "refresh"),
             key_hint("q", "quit"),
         ],
         Mode::Filter => vec![
