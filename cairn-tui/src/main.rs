@@ -437,23 +437,63 @@ enum ListJump {
 /// handler runs and the normal key dispatch is suppressed. This is the
 /// extension point for every dialog: edit confirmation, text input
 /// prompts, the command palette, and anything else that needs focus.
-#[derive(Debug, Clone)]
+///
+/// Note: not Clone because `TextArea` carries undo history and cursor
+/// state. `handle_overlay_key` uses `app.overlay.take()` to avoid borrow
+/// conflicts, then puts the overlay back if it's still active.
 enum Overlay {
     /// The "enter edit mode?" red confirmation dialog. Shown on `e` in
     /// browse mode. Enter confirms (acquires the lock), Esc cancels.
     EditConfirm,
-    /// Notification toast — auto-dismissed on any keypress or after the
-    /// next draw cycle if the user just hit a key. Used for transient
-    /// success/error feedback.
+    /// Notification toast — auto-dismissed on any keypress.
     Notification {
         message: String,
         is_error: bool,
     },
-    /// Fuzzy-filtered command palette (`:` in browse mode). Lists all
-    /// available actions; the user types to narrow and Enter dispatches.
+    /// Fuzzy-filtered command palette (`:` in browse mode).
     CommandPalette {
         filter: String,
         selected: usize,
+    },
+    /// Multiline text editor (tui-textarea). Used for editing block
+    /// content, voice, edge notes, etc. Ctrl+S saves, Esc cancels.
+    /// The TextArea is boxed because it's much larger than the other
+    /// variants (cursor state, undo history, line buffer).
+    TextInput {
+        title: String,
+        textarea: Box<tui_textarea::TextArea<'static>>,
+        purpose: TextInputPurpose,
+    },
+    /// Single-line text input for short prompts (reason, rename key).
+    /// Enter confirms, Esc cancels.
+    LineInput {
+        title: String,
+        buffer: String,
+        purpose: LineInputPurpose,
+    },
+    /// Block picker — select which block to edit within a topic.
+    /// Shown when a topic has 2+ blocks and the user hits `e`.
+    BlockPicker {
+        topic_key: String,
+        blocks: Vec<(String, String)>, // (block_id, first line preview)
+        selected: usize,
+    },
+}
+
+/// What the TextInput overlay should do with its content when saved.
+enum TextInputPurpose {
+    AmendBlock {
+        topic_key: String,
+        block_id: String,
+    },
+}
+
+/// What the LineInput overlay should do with its content when confirmed.
+enum LineInputPurpose {
+    AmendReason {
+        topic_key: String,
+        block_id: String,
+        new_content: String,
     },
 }
 
@@ -537,6 +577,14 @@ fn all_palette_commands() -> Vec<PaletteCommand> {
             browse_only: true,
         },
         PaletteCommand {
+            name: "Amend block",
+            description: "Edit a block's content in the selected topic",
+            key_hint: Some("e"),
+            action: Action::AmendBlock,
+            edit_only: true,
+            browse_only: false,
+        },
+        PaletteCommand {
             name: "Exit edit mode",
             description: "Release the editor lock",
             key_hint: Some("Esc"),
@@ -612,7 +660,7 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
         // normal action handler below. Otherwise the key is consumed.
         let mut dispatched_action = None;
         if app.overlay.is_some() {
-            match handle_overlay_key(app, client, key.code).await {
+            match handle_overlay_key(app, client, key).await {
                 OverlayResult::Consumed => continue,
                 OverlayResult::Dispatch(a) => dispatched_action = Some(a),
             }
@@ -745,6 +793,72 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                     selected: 0,
                 });
             }
+            Action::AmendBlock => {
+                if !app.edit_mode {
+                    app.overlay = Some(Overlay::Notification {
+                        message: "Enter edit mode first (press e)".into(),
+                        is_error: true,
+                    });
+                } else if let Some(detail) = &app.caches.detail {
+                    let topic_key = detail.topic.key.clone();
+                    let blocks: Vec<(String, String)> = detail
+                        .topic
+                        .blocks
+                        .iter()
+                        .map(|b| {
+                            let preview = b
+                                .content
+                                .lines()
+                                .next()
+                                .unwrap_or("")
+                                .chars()
+                                .take(60)
+                                .collect::<String>();
+                            (b.id.clone(), preview)
+                        })
+                        .collect();
+                    match blocks.len() {
+                        0 => {
+                            app.overlay = Some(Overlay::Notification {
+                                message: "No blocks to amend in this topic".into(),
+                                is_error: true,
+                            });
+                        }
+                        1 => {
+                            // Skip the picker — go straight to the editor.
+                            let block = &detail.topic.blocks[0];
+                            let lines: Vec<String> =
+                                block.content.lines().map(String::from).collect();
+                            let mut textarea = tui_textarea::TextArea::new(lines);
+                            textarea.set_cursor_line_style(Style::default());
+                            textarea.set_style(Style::default().fg(Color::White));
+                            app.overlay = Some(Overlay::TextInput {
+                                title: format!(
+                                    "Amend block {} in {}",
+                                    block.id, topic_key
+                                ),
+                                textarea: Box::new(textarea),
+                                purpose: TextInputPurpose::AmendBlock {
+                                    topic_key,
+                                    block_id: block.id.clone(),
+                                },
+                            });
+                        }
+                        _ => {
+                            app.overlay = Some(Overlay::BlockPicker {
+                                topic_key,
+                                blocks,
+                                selected: 0,
+                            });
+                        }
+                    }
+                } else {
+                    app.overlay = Some(Overlay::Notification {
+                        message: "Select a topic first".into(),
+                        is_error: true,
+                    });
+                }
+            }
         }
     }
 }
@@ -772,6 +886,8 @@ enum Action {
     Refresh,
     /// Open the command palette.
     OpenPalette,
+    /// Initiate the amend-block flow (block picker → editor → reason).
+    AmendBlock,
 }
 
 #[derive(Clone, Copy)]
@@ -798,7 +914,8 @@ fn handle_browse_key(code: KeyCode, mods: KeyModifiers, edit_mode: bool) -> Acti
         KeyCode::BackTab => Action::PrevTab,
         KeyCode::Char('l') if !mods.contains(KeyModifiers::CONTROL) => Action::NextTab,
         KeyCode::Char('h') if !mods.contains(KeyModifiers::CONTROL) => Action::PrevTab,
-        KeyCode::Char('e') if !edit_mode => Action::RequestEditMode,
+        KeyCode::Char('e') if edit_mode => Action::AmendBlock,
+        KeyCode::Char('e') => Action::RequestEditMode,
         KeyCode::Char('R') => Action::Refresh,
         KeyCode::Char(':') => Action::OpenPalette,
         _ => Action::None,
@@ -818,25 +935,24 @@ fn handle_text_key(code: KeyCode, _target: TextTarget) -> Action {
 async fn handle_overlay_key(
     app: &mut App,
     client: &CairnClient,
-    code: KeyCode,
+    key: event::KeyEvent,
 ) -> OverlayResult {
-    let overlay = app.overlay.clone().unwrap();
+    // Take ownership so we can match without borrowing app.
+    let overlay = app.overlay.take().unwrap();
     match overlay {
-        Overlay::EditConfirm => match code {
+        Overlay::EditConfirm => match key.code {
             KeyCode::Enter => {
-                app.overlay = None;
                 match client.begin_editor_session(Some("TUI edit session")).await {
                     Ok(()) => {
                         app.edit_mode = true;
                     }
                     Err(CairnError::EditorBusy { reason, since }) => {
-                        let msg = format!(
-                            "Editor lock held by another client since {} (reason: {})",
-                            since.format("%H:%M:%S"),
-                            reason.as_deref().unwrap_or("none")
-                        );
                         app.overlay = Some(Overlay::Notification {
-                            message: msg,
+                            message: format!(
+                                "Editor lock held by another client since {} (reason: {})",
+                                since.format("%H:%M:%S"),
+                                reason.as_deref().unwrap_or("none")
+                            ),
                             is_error: true,
                         });
                     }
@@ -849,29 +965,19 @@ async fn handle_overlay_key(
                 }
                 OverlayResult::Consumed
             }
-            KeyCode::Esc => {
-                app.overlay = None;
-                OverlayResult::Consumed
-            }
-            _ => OverlayResult::Consumed,
+            _ => OverlayResult::Consumed, // Esc or anything else → dismiss
         },
-        Overlay::Notification { .. } => {
-            app.overlay = None;
-            OverlayResult::Consumed
-        }
-        Overlay::CommandPalette { mut filter, mut selected } => match code {
-            KeyCode::Esc => {
-                app.overlay = None;
-                OverlayResult::Consumed
-            }
+        Overlay::Notification { .. } => OverlayResult::Consumed,
+        Overlay::CommandPalette {
+            mut filter,
+            mut selected,
+        } => match key.code {
+            KeyCode::Esc => OverlayResult::Consumed,
             KeyCode::Enter => {
                 let matches = filtered_palette(&filter, app.edit_mode);
                 if let Some((_, cmd)) = matches.get(selected) {
-                    let action = cmd.action;
-                    app.overlay = None;
-                    OverlayResult::Dispatch(action)
+                    OverlayResult::Dispatch(cmd.action)
                 } else {
-                    app.overlay = None;
                     OverlayResult::Consumed
                 }
             }
@@ -900,7 +1006,198 @@ async fn handle_overlay_key(
                 app.overlay = Some(Overlay::CommandPalette { filter, selected });
                 OverlayResult::Consumed
             }
-            _ => OverlayResult::Consumed,
+            _ => {
+                app.overlay = Some(Overlay::CommandPalette { filter, selected });
+                OverlayResult::Consumed
+            }
+        },
+        Overlay::TextInput {
+            textarea: mut textarea_box,
+            title,
+            purpose,
+        } => {
+            let textarea = &mut *textarea_box;
+            // Ctrl+S saves, Esc cancels. Everything else is passed to the textarea.
+            if key.code == KeyCode::Char('s')
+                && key.modifiers.contains(KeyModifiers::CONTROL)
+            {
+                let content = textarea.lines().join("\n");
+                match purpose {
+                    TextInputPurpose::AmendBlock {
+                        topic_key,
+                        block_id,
+                    } => {
+                        // Open reason prompt.
+                        app.overlay = Some(Overlay::LineInput {
+                            title: "Reason for amendment".into(),
+                            buffer: String::new(),
+                            purpose: LineInputPurpose::AmendReason {
+                                topic_key,
+                                block_id,
+                                new_content: content,
+                            },
+                        });
+                    }
+                }
+                OverlayResult::Consumed
+            } else if key.code == KeyCode::Esc {
+                // Cancel — discard edits.
+                OverlayResult::Consumed
+            } else {
+                // Pass the key event to tui-textarea for editing.
+                textarea.input(key);
+                app.overlay = Some(Overlay::TextInput {
+                    textarea: textarea_box,
+                    title,
+                    purpose,
+                });
+                OverlayResult::Consumed
+            }
+        }
+        Overlay::LineInput {
+            title,
+            mut buffer,
+            purpose,
+        } => match key.code {
+            KeyCode::Esc => OverlayResult::Consumed,
+            KeyCode::Enter => {
+                let value = buffer.trim().to_string();
+                if value.is_empty() {
+                    // Reason is mandatory.
+                    app.overlay = Some(Overlay::LineInput {
+                        title,
+                        buffer,
+                        purpose,
+                    });
+                    return OverlayResult::Consumed;
+                }
+                match purpose {
+                    LineInputPurpose::AmendReason {
+                        topic_key,
+                        block_id,
+                        new_content,
+                    } => {
+                        match client
+                            .amend(cairn_core::AmendParams {
+                                topic_key: topic_key.clone(),
+                                block_id: block_id.clone(),
+                                new_content,
+                                reason: value,
+                            })
+                            .await
+                        {
+                            Ok(result) => {
+                                app.overlay = Some(Overlay::Notification {
+                                    message: format!(
+                                        "Amended block {} in '{}'",
+                                        result.block_id, result.topic_key
+                                    ),
+                                    is_error: false,
+                                });
+                                // Refresh the detail view.
+                                app.caches = TopicCaches::default();
+                                app.fetch_active_tab(client).await;
+                            }
+                            Err(e) => {
+                                app.overlay = Some(Overlay::Notification {
+                                    message: format!("Amend failed: {e}"),
+                                    is_error: true,
+                                });
+                            }
+                        }
+                    }
+                }
+                OverlayResult::Consumed
+            }
+            KeyCode::Backspace => {
+                buffer.pop();
+                app.overlay = Some(Overlay::LineInput {
+                    title,
+                    buffer,
+                    purpose,
+                });
+                OverlayResult::Consumed
+            }
+            KeyCode::Char(c) => {
+                buffer.push(c);
+                app.overlay = Some(Overlay::LineInput {
+                    title,
+                    buffer,
+                    purpose,
+                });
+                OverlayResult::Consumed
+            }
+            _ => {
+                app.overlay = Some(Overlay::LineInput {
+                    title,
+                    buffer,
+                    purpose,
+                });
+                OverlayResult::Consumed
+            }
+        },
+        Overlay::BlockPicker {
+            topic_key,
+            blocks,
+            mut selected,
+        } => match key.code {
+            KeyCode::Esc => OverlayResult::Consumed,
+            KeyCode::Enter => {
+                if let Some((block_id, _)) = blocks.get(selected) {
+                    // Fetch the full block content to prefill the editor.
+                    if let Some(detail) = &app.caches.detail {
+                        if let Some(block) = detail
+                            .topic
+                            .blocks
+                            .iter()
+                            .find(|b| b.id == *block_id)
+                        {
+                            let lines: Vec<String> =
+                                block.content.lines().map(String::from).collect();
+                            let mut textarea = tui_textarea::TextArea::new(lines);
+                            textarea.set_cursor_line_style(Style::default());
+                            textarea.set_style(Style::default().fg(Color::White));
+                            app.overlay = Some(Overlay::TextInput {
+                                title: format!("Amend block {} in {}", block_id, topic_key),
+                                textarea: Box::new(textarea),
+                                purpose: TextInputPurpose::AmendBlock {
+                                    topic_key,
+                                    block_id: block_id.clone(),
+                                },
+                            });
+                        }
+                    }
+                }
+                OverlayResult::Consumed
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if !blocks.is_empty() {
+                    selected = (selected + 1).min(blocks.len() - 1);
+                }
+                app.overlay = Some(Overlay::BlockPicker {
+                    topic_key,
+                    blocks,
+                    selected,
+                });
+                OverlayResult::Consumed
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                selected = selected.saturating_sub(1);
+                app.overlay = Some(Overlay::BlockPicker {
+                    topic_key,
+                    blocks,
+                    selected,
+                });
+                OverlayResult::Consumed
+            }
+            _ => {
+                app.overlay = Some(Overlay::BlockPicker {
+                    topic_key,
+                    blocks,
+                    selected,
+                });
+                OverlayResult::Consumed
+            }
         },
     }
 }
@@ -1084,6 +1381,155 @@ fn draw_overlay(f: &mut Frame, app: &App, area: Rect) {
 
             let list = List::new(items).style(Style::default().bg(Color::Black));
             f.render_widget(list, list_area);
+        }
+        Overlay::TextInput {
+            title,
+            textarea: textarea_box,
+            ..
+        } => {
+            let textarea = &**textarea_box;
+            // Full-width, ~80% height editor overlay.
+            let margin = 2u16;
+            let w = area.width.saturating_sub(margin * 2);
+            let h = area.height.saturating_sub(margin * 2);
+            let editor_area = Rect::new(margin, margin, w, h);
+
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Yellow))
+                .title(format!(" {} ", title))
+                .style(Style::default().bg(Color::Black));
+            let inner = block.inner(editor_area);
+            f.render_widget(block, editor_area);
+
+            // Render the textarea inside the block.
+            f.render_widget(textarea, inner);
+
+            // Hint line at the bottom of the editor area.
+            if editor_area.height >= 3 {
+                let hint_area = Rect::new(
+                    editor_area.x + 1,
+                    editor_area.y + editor_area.height - 1,
+                    editor_area.width.saturating_sub(2),
+                    1,
+                );
+                let hints = Line::from(vec![
+                    Span::styled(
+                        "Ctrl+S",
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(" save  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        "Esc",
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+                ]);
+                f.render_widget(
+                    Paragraph::new(hints).style(Style::default().bg(Color::Black)),
+                    hint_area,
+                );
+            }
+        }
+        Overlay::LineInput {
+            title, buffer, ..
+        } => {
+            let dialog_width = 60u16.min(area.width.saturating_sub(4));
+            let dialog_height = 5u16;
+            let x = (area.width.saturating_sub(dialog_width)) / 2;
+            let y = (area.height.saturating_sub(dialog_height)) / 2;
+            let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
+
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Yellow))
+                .title(format!(" {} ", title))
+                .style(Style::default().bg(Color::Black));
+            let inner = block.inner(dialog_area);
+            f.render_widget(block, dialog_area);
+
+            let input_line = Line::from(vec![
+                Span::styled("> ", Style::default().fg(Color::Yellow)),
+                Span::raw(buffer.clone()),
+                Span::styled("_", Style::default().fg(Color::DarkGray)),
+            ]);
+            f.render_widget(Paragraph::new(input_line), inner);
+
+            // Hint
+            if inner.height >= 2 {
+                let hint_area =
+                    Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1);
+                let hints = Line::from(vec![
+                    Span::styled(
+                        "Enter",
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(" confirm  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        "Esc",
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+                ]);
+                f.render_widget(Paragraph::new(hints), hint_area);
+            }
+        }
+        Overlay::BlockPicker {
+            topic_key,
+            blocks,
+            selected,
+        } => {
+            let list_height = blocks.len().min(12) as u16;
+            let dialog_height = (list_height + 3).min(area.height.saturating_sub(4));
+            let dialog_width = 60u16.min(area.width.saturating_sub(4));
+            let x = (area.width.saturating_sub(dialog_width)) / 2;
+            let y = (area.height.saturating_sub(dialog_height)) / 2;
+            let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
+
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Yellow))
+                .title(format!(" Select block in {} ", topic_key))
+                .style(Style::default().bg(Color::Black));
+            let inner = block.inner(dialog_area);
+            f.render_widget(block, dialog_area);
+
+            let items: Vec<ListItem> = blocks
+                .iter()
+                .enumerate()
+                .take(inner.height as usize)
+                .map(|(i, (_id, preview))| {
+                    let style = if i == *selected {
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::White)
+                    };
+                    ListItem::new(Line::from(vec![
+                        Span::styled(format!(" {}. ", i + 1), style),
+                        Span::styled(
+                            if preview.is_empty() {
+                                "(empty)".into()
+                            } else {
+                                preview.clone()
+                            },
+                            style,
+                        ),
+                    ]))
+                })
+                .collect();
+            let list = List::new(items).style(Style::default().bg(Color::Black));
+            f.render_widget(list, inner);
         }
         Overlay::Notification { message, is_error } => {
             let color = if *is_error { Color::Red } else { Color::Green };
