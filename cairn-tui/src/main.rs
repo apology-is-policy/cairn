@@ -1951,16 +1951,17 @@ async fn handle_overlay_key(
                             }
                             "w" => {
                                 // Save but keep the editor open.
+                                // For purposes that chain (AmendBlock → reason
+                                // prompt), :w behaves like :wq since the save
+                                // isn't complete without the follow-up.
+                                let needs_followup = matches!(purpose, TextInputPurpose::AmendBlock { .. });
                                 let content = unwrap_soft(textarea.lines());
-                                let purpose_clone = purpose.clone();
-                                dispatch_text_save(app, client, purpose, content.clone()).await;
-                                // Re-open the editor if dispatch didn't chain
-                                // to a different overlay (e.g. amend reason).
-                                // For amend, dispatch opens a LineInput — check
-                                // if that happened and don't overwrite it.
-                                if matches!(app.overlay, Some(Overlay::Notification { .. }) | None) {
-                                    // It was a terminal save (voice/learn/etc).
-                                    // Show "saved" and re-open editor.
+                                if needs_followup {
+                                    dispatch_text_save(app, client, purpose, content).await;
+                                } else {
+                                    let purpose_clone = purpose.clone();
+                                    dispatch_text_save(app, client, purpose, content.clone()).await;
+                                    // Re-open the editor with updated baseline.
                                     let lines = soft_wrap(&content, 76);
                                     let mut new_ta = tui_textarea::TextArea::new(lines);
                                     new_ta.set_cursor_line_style(Style::default());
@@ -1974,7 +1975,6 @@ async fn handle_overlay_key(
                                         original: content,
                                     });
                                 }
-                                // else: dispatch chained to reason prompt etc., leave it.
                             }
                             "q" => {
                                 let current = unwrap_soft(textarea.lines());
