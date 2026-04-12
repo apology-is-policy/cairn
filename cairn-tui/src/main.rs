@@ -1950,18 +1950,17 @@ async fn handle_overlay_key(
                                 dispatch_text_save(app, client, purpose, content).await;
                             }
                             "w" => {
-                                // Save but keep the editor open.
-                                // For purposes that chain (AmendBlock → reason
-                                // prompt), :w behaves like :wq since the save
-                                // isn't complete without the follow-up.
-                                let needs_followup = matches!(purpose, TextInputPurpose::AmendBlock { .. });
+                                // Save and keep the editor open.
+                                // For terminal purposes (voice, summary, learn,
+                                // add-block), dispatch the save immediately and
+                                // re-open. For amend (which needs a reason to
+                                // complete), just update the baseline — the
+                                // actual save happens on :wq.
                                 let content = unwrap_soft(textarea.lines());
-                                if needs_followup {
-                                    dispatch_text_save(app, client, purpose, content).await;
-                                } else {
+                                let is_terminal = !matches!(purpose, TextInputPurpose::AmendBlock { .. });
+                                if is_terminal {
                                     let purpose_clone = purpose.clone();
                                     dispatch_text_save(app, client, purpose, content.clone()).await;
-                                    // Re-open the editor with updated baseline.
                                     let lines = soft_wrap(&content, 76);
                                     let mut new_ta = tui_textarea::TextArea::new(lines);
                                     new_ta.set_cursor_line_style(Style::default());
@@ -1970,6 +1969,17 @@ async fn handle_overlay_key(
                                         title,
                                         textarea: Box::new(new_ta),
                                         purpose: purpose_clone,
+                                        command_mode: false,
+                                        command_buf: String::new(),
+                                        original: content,
+                                    });
+                                } else {
+                                    // Amend: keep editing, update baseline so
+                                    // :q won't warn. Content is saved on :wq.
+                                    app.overlay = Some(Overlay::TextInput {
+                                        textarea: textarea_box,
+                                        title,
+                                        purpose,
                                         command_mode: false,
                                         command_buf: String::new(),
                                         original: content,
