@@ -1947,7 +1947,7 @@ async fn handle_overlay_key(
                             command_mode: false,
                             command_buf: String::new(),
                             original,
-                            pending_save: false,
+                            pending_save,
                         });
                         OverlayResult::Consumed
                     }
@@ -1982,7 +1982,7 @@ async fn handle_overlay_key(
                                         command_mode: false,
                                         command_buf: String::new(),
                                         original: content,
-                                        pending_save: false,
+                                        pending_save: false, // terminal save resets
                                     });
                                 } else {
                                     // Amend: keep editing, update baseline so
@@ -2017,7 +2017,7 @@ async fn handle_overlay_key(
                                         command_mode: false,
                                         command_buf: String::new(),
                                         original,
-                                        pending_save: false,
+                                        pending_save,
                                     });
                                     return OverlayResult::Consumed;
                                 }
@@ -2035,7 +2035,7 @@ async fn handle_overlay_key(
                                     command_mode: true,
                                     command_buf: format!("unknown: {cmd}"),
                                     original,
-                                    pending_save: false,
+                                    pending_save,
                                 });
                                 return OverlayResult::Consumed;
                             }
@@ -2051,7 +2051,7 @@ async fn handle_overlay_key(
                             command_mode,
                             command_buf,
                             original,
-                            pending_save: false,
+                            pending_save,
                         });
                         OverlayResult::Consumed
                     }
@@ -2067,7 +2067,7 @@ async fn handle_overlay_key(
                             command_mode,
                             command_buf,
                             original,
-                            pending_save: false,
+                            pending_save,
                         });
                         OverlayResult::Consumed
                     }
@@ -2079,7 +2079,7 @@ async fn handle_overlay_key(
                             command_mode,
                             command_buf,
                             original,
-                            pending_save: false,
+                            pending_save,
                         });
                         OverlayResult::Consumed
                     }
@@ -2093,7 +2093,7 @@ async fn handle_overlay_key(
                     command_mode: true,
                     command_buf: String::new(),
                     original,
-                    pending_save: false,
+                    pending_save,
                 });
                 OverlayResult::Consumed
             } else {
@@ -2106,7 +2106,7 @@ async fn handle_overlay_key(
                     command_mode: false,
                     command_buf: String::new(),
                     original,
-                    pending_save: false,
+                    pending_save,
                 });
                 OverlayResult::Consumed
             }
