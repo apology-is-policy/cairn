@@ -841,13 +841,17 @@ fn all_palette_commands() -> Vec<PaletteCommand> {
     ]
 }
 
-fn filtered_palette(filter: &str, edit_mode: bool) -> Vec<(usize, &'static PaletteCommand)> {
+fn filtered_palette(
+    filter: &str,
+    edit_mode: bool,
+    context_actions: &[Action],
+) -> Vec<(usize, &'static PaletteCommand)> {
     use std::sync::OnceLock;
     static COMMANDS: OnceLock<Vec<PaletteCommand>> = OnceLock::new();
     let commands = COMMANDS.get_or_init(all_palette_commands);
 
     let needle = filter.trim().to_lowercase();
-    commands
+    let mut matched: Vec<(usize, &PaletteCommand)> = commands
         .iter()
         .enumerate()
         .filter(|(_, cmd)| {
@@ -863,7 +867,24 @@ fn filtered_palette(filter: &str, edit_mode: bool) -> Vec<(usize, &'static Palet
             cmd.name.to_lowercase().contains(&needle)
                 || cmd.description.to_lowercase().contains(&needle)
         })
-        .collect()
+        .collect();
+
+    // Partition: context-relevant actions first, then the rest.
+    if !context_actions.is_empty() && needle.is_empty() {
+        matched.sort_by_key(|(_, cmd)| {
+            // Actions in context_actions sort to the front (key=0), rest to back (key=1).
+            let dominated = |a: &Action, b: &Action| -> bool {
+                std::mem::discriminant(a) == std::mem::discriminant(b)
+            };
+            if context_actions.iter().any(|ca| dominated(ca, &cmd.action)) {
+                0
+            } else {
+                1
+            }
+        });
+    }
+
+    matched
 }
 
 // ── Event loop ────────────────────────────────────────────────────
@@ -1022,6 +1043,8 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
             },
             Action::SwitchTab(t) => {
                 app.tab = t;
+                app.focus = Focus::Right;
+                app.detail_selected = 0;
                 app.fetch_active_tab(client).await;
             }
             Action::PrevTab => {
@@ -1578,6 +1601,12 @@ fn handle_text_key(code: KeyCode, _target: TextTarget) -> Action {
     }
 }
 
+/// Extract the Action values from the current context menu items,
+/// used to prioritize them in the command palette.
+fn context_action_set(app: &App) -> Vec<Action> {
+    build_context_menu(app).into_iter().map(|i| i.action).collect()
+}
+
 /// Build context-menu items based on the currently focused pane and
 /// selected element. Returns an empty vec if nothing is actionable.
 fn build_context_menu(app: &App) -> Vec<ContextMenuItem> {
@@ -1671,6 +1700,10 @@ fn build_context_menu(app: &App) -> Vec<ContextMenuItem> {
                                 action: Action::AmendBlock,
                             });
                             items.push(ContextMenuItem {
+                                label: "Add block".into(),
+                                action: Action::AddBlock,
+                            });
+                            items.push(ContextMenuItem {
                                 label: "Move block up".into(),
                                 action: Action::MoveBlockUp,
                             });
@@ -1685,6 +1718,10 @@ fn build_context_menu(app: &App) -> Vec<ContextMenuItem> {
                             items.push(ContextMenuItem {
                                 label: "Remove this edge".into(),
                                 action: Action::RemoveEdge,
+                            });
+                            items.push(ContextMenuItem {
+                                label: "Add edge".into(),
+                                action: Action::AddEdge,
                             });
                         }
                     }
@@ -1740,10 +1777,12 @@ async fn handle_overlay_key(
         Overlay::CommandPalette {
             mut filter,
             mut selected,
-        } => match key.code {
+        } => {
+            let context_actions = context_action_set(app);
+            match key.code {
             KeyCode::Esc => OverlayResult::Consumed,
             KeyCode::Enter => {
-                let matches = filtered_palette(&filter, app.edit_mode);
+                let matches = filtered_palette(&filter, app.edit_mode, &context_actions);
                 if let Some((_, cmd)) = matches.get(selected) {
                     OverlayResult::Dispatch(cmd.action)
                 } else {
@@ -1763,7 +1802,7 @@ async fn handle_overlay_key(
                 OverlayResult::Consumed
             }
             KeyCode::Down | KeyCode::Tab => {
-                let matches = filtered_palette(&filter, app.edit_mode);
+                let matches = filtered_palette(&filter, app.edit_mode, &context_actions);
                 if !matches.is_empty() {
                     selected = (selected + 1).min(matches.len() - 1);
                 }
@@ -1779,7 +1818,7 @@ async fn handle_overlay_key(
                 app.overlay = Some(Overlay::CommandPalette { filter, selected });
                 OverlayResult::Consumed
             }
-        },
+        }},
         Overlay::TextInput {
             textarea: mut textarea_box,
             title,
@@ -2456,12 +2495,12 @@ fn draw_overlay(f: &mut Frame, app: &App, area: Rect) {
             f.render_widget(paragraph, dialog_area);
         }
         Overlay::CommandPalette { filter, selected } => {
-            let matches = filtered_palette(filter, app.edit_mode);
-            let max_visible = 12usize;
+            let ctx = context_action_set(app);
+            let matches = filtered_palette(filter, app.edit_mode, &ctx);
+            let max_visible = 14usize;
             let list_height = matches.len().min(max_visible) as u16;
-            // 3 = top border + filter line + bottom border
             let dialog_height = (list_height + 3).min(area.height.saturating_sub(4));
-            let dialog_width = 60u16.min(area.width.saturating_sub(4));
+            let dialog_width = 80u16.min(area.width.saturating_sub(4));
             let x = (area.width.saturating_sub(dialog_width)) / 2;
             let y = (area.height.saturating_sub(dialog_height)) / 2;
             let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
@@ -3310,7 +3349,8 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
     let spans = match app.mode {
         Mode::Browse if app.edit_mode => vec![
             key_hint("j/k", "navigate"),
-            key_hint("tab", "switch pane"),
+            key_hint("tab", "pane"),
+            key_hint("S-tab", "right tab"),
             key_hint("enter", "actions"),
             key_hint(":", "commands"),
             key_hint("/", "filter"),
@@ -3320,7 +3360,8 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
         ],
         Mode::Browse => vec![
             key_hint("j/k", "navigate"),
-            key_hint("tab", "switch pane"),
+            key_hint("tab", "pane"),
+            key_hint("S-tab", "right tab"),
             key_hint("enter", "actions"),
             key_hint(":", "commands"),
             key_hint("/", "filter"),
