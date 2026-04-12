@@ -318,6 +318,10 @@ impl CairnClient {
         self.call(CairnRequest::SetTags(params)).await
     }
 
+    pub async fn delete_block(&self, params: DeleteBlockParams) -> Result<DeleteBlockResult> {
+        self.call(CairnRequest::DeleteBlock(params)).await
+    }
+
     pub async fn disconnect(&self, params: DisconnectParams) -> Result<DisconnectResult> {
         self.call(CairnRequest::Disconnect(params)).await
     }

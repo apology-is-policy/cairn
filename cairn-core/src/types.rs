@@ -317,6 +317,14 @@ pub struct DisconnectParams {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct DeleteBlockParams {
+    pub topic_key: String,
+    pub block_id: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MoveBlockParams {
     pub topic_key: String,
     pub block_id: String,
@@ -519,6 +527,13 @@ pub struct MoveBlockResult {
     pub topic_key: String,
     pub block_id: String,
     pub new_position: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeleteBlockResult {
+    pub topic_key: String,
+    pub block_id: String,
+    pub remaining_blocks: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

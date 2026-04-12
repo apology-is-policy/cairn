@@ -719,6 +719,52 @@ pub async fn disconnect(db: &CairnDb, params: DisconnectParams) -> Result<Discon
     })
 }
 
+/// Delete a block from a topic.
+pub async fn delete_block(db: &CairnDb, params: DeleteBlockParams) -> Result<DeleteBlockResult> {
+    let mut topic = get_topic(db, &params.topic_key)
+        .await?
+        .ok_or_else(|| CairnError::TopicNotFound(params.topic_key.clone()))?;
+
+    let idx = topic
+        .blocks
+        .iter()
+        .position(|b| b.id == params.block_id)
+        .ok_or_else(|| {
+            CairnError::BlockNotFound(params.block_id.clone(), params.topic_key.clone())
+        })?;
+    let removed = topic.blocks.remove(idx);
+
+    let blocks_json =
+        serde_json::to_string(&topic.blocks).map_err(|e| CairnError::Db(e.to_string()))?;
+
+    db.db
+        .query(
+            "UPDATE topic SET
+                blocks = $blocks,
+                updated_at = time::now()
+            WHERE key = $key",
+        )
+        .bind(("blocks", blocks_json))
+        .bind(("key", params.topic_key.clone()))
+        .await
+        .map_err(|e| CairnError::Db(e.to_string()))?;
+
+    write_history(
+        db,
+        "delete_block",
+        &format!("topic:{}", params.topic_key),
+        &params.reason,
+        Some(&removed.content),
+    )
+    .await?;
+
+    Ok(DeleteBlockResult {
+        topic_key: params.topic_key,
+        block_id: params.block_id,
+        remaining_blocks: topic.blocks.len(),
+    })
+}
+
 /// Move a block to a new position within its topic.
 pub async fn move_block(db: &CairnDb, params: MoveBlockParams) -> Result<MoveBlockResult> {
     let mut topic = get_topic(db, &params.topic_key)

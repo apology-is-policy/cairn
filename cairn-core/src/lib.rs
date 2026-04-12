@@ -122,6 +122,10 @@ impl Cairn {
         ops::disconnect(&self.db, params).await
     }
 
+    pub async fn delete_block(&self, params: DeleteBlockParams) -> Result<DeleteBlockResult> {
+        ops::delete_block(&self.db, params).await
+    }
+
     pub async fn move_block(&self, params: MoveBlockParams) -> Result<MoveBlockResult> {
         ops::move_block(&self.db, params).await
     }

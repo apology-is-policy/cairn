@@ -76,6 +76,7 @@ pub enum CairnRequest {
     SetSummary(SetSummaryParams),
     SetTags(SetTagsParams),
     Disconnect(DisconnectParams),
+    DeleteBlock(DeleteBlockParams),
     MoveBlock(MoveBlockParams),
 
     // Editor session control (v3)
@@ -115,6 +116,7 @@ impl CairnRequest {
             | SetSummary(_)
             | SetTags(_)
             | Disconnect(_)
+            | DeleteBlock(_)
             | MoveBlock(_) => true,
 
             // Reads: do not change graph state. `Snapshot` and `ExportJson`

@@ -443,6 +443,7 @@ async fn dispatch(
         SetSummary(p) => to_val(cairn.set_summary(p).await),
         SetTags(p) => to_val(cairn.set_tags(p).await),
         Disconnect(p) => to_val(cairn.disconnect(p).await),
+        DeleteBlock(p) => to_val(cairn.delete_block(p).await),
         MoveBlock(p) => to_val(cairn.move_block(p).await),
 
         // Already handled above.
