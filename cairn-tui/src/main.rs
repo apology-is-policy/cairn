@@ -25,7 +25,10 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
+    ScrollbarState, Wrap,
+};
 use ratatui::{Frame, Terminal};
 
 #[derive(Parser)]
@@ -544,6 +547,8 @@ enum Overlay {
         command_mode: bool,
         /// The command being typed (e.g. "w", "wq").
         command_buf: String,
+        /// Original content for dirty-checking (`:q` warns if modified).
+        original: String,
     },
     /// Single-line text input for short prompts (reason, rename key).
     /// Enter confirms, Esc cancels.
@@ -1099,6 +1104,7 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                         purpose: TextInputPurpose::EditSummary { topic_key },
                         command_mode: false,
                         command_buf: String::new(),
+                        original: current,
                     });
                 } else {
                     notify_err(app, "Select a topic first".into());
@@ -1119,6 +1125,7 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                         purpose: TextInputPurpose::AddBlockContent { topic_key },
                         command_mode: false,
                         command_buf: String::new(),
+                        original: String::new(),
                     });
                 } else {
                     notify_err(app, "Select a topic first".into());
@@ -1200,6 +1207,7 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                             },
                             command_mode: false,
                             command_buf: String::new(),
+                            original: block.content.clone(),
                         });
                     } else {
                         let blocks: Vec<(String, String)> = detail
@@ -1282,6 +1290,7 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                                 purpose: TextInputPurpose::EditVoice,
                                 command_mode: false,
                                 command_buf: String::new(),
+                                original: content,
                             });
                         }
                         Err(e) => {
@@ -1843,6 +1852,7 @@ async fn handle_overlay_key(
             purpose,
             command_mode,
             command_buf,
+            original,
         } => {
             let textarea = &mut *textarea_box;
             let mut command_mode = command_mode;
@@ -1859,6 +1869,7 @@ async fn handle_overlay_key(
                             purpose,
                             command_mode: false,
                             command_buf: String::new(),
+                            original,
                         });
                         OverlayResult::Consumed
                     }
@@ -1867,24 +1878,41 @@ async fn handle_overlay_key(
                         let cmd = command_buf.trim_start_matches(':').trim().to_string();
                         match cmd.as_str() {
                             "w" | "wq" => {
+                                // Save and proceed to next step (reason prompt
+                                // for amend, notification for voice/learn/summary).
                                 let content = unwrap_soft(textarea.lines());
                                 dispatch_text_save(app, client, purpose, content).await;
                             }
-                            "q" | "q!" => {
-                                // Discard and close. overlay is already None (taken).
-                                // Show a brief "discarded" notification.
+                            "q" => {
+                                // Check for unsaved changes.
+                                let current = unwrap_soft(textarea.lines());
+                                if current != original {
+                                    // Resume with warning in command prompt.
+                                    app.overlay = Some(Overlay::TextInput {
+                                        textarea: textarea_box,
+                                        title,
+                                        purpose,
+                                        command_mode: true,
+                                        command_buf: ":q — unsaved changes! Use :q! to discard".into(),
+                                        original,
+                                    });
+                                    return OverlayResult::Consumed;
+                                }
+                                // No changes, close silently.
+                            }
+                            "q!" => {
+                                // Force close, discard changes.
                                 notify_ok(app, "Editor closed (changes discarded)".into());
                             }
                             _ => {
                                 // Unknown command — resume editing.
-                                command_mode = false;
-                                command_buf.clear();
                                 app.overlay = Some(Overlay::TextInput {
                                     textarea: textarea_box,
                                     title,
                                     purpose,
-                                    command_mode,
-                                    command_buf,
+                                    command_mode: false,
+                                    command_buf: String::new(),
+                                    original,
                                 });
                                 return OverlayResult::Consumed;
                             }
@@ -1899,6 +1927,7 @@ async fn handle_overlay_key(
                             purpose,
                             command_mode,
                             command_buf,
+                            original,
                         });
                         OverlayResult::Consumed
                     }
@@ -1913,6 +1942,7 @@ async fn handle_overlay_key(
                             purpose,
                             command_mode,
                             command_buf,
+                            original,
                         });
                         OverlayResult::Consumed
                     }
@@ -1923,6 +1953,7 @@ async fn handle_overlay_key(
                             purpose,
                             command_mode,
                             command_buf,
+                            original,
                         });
                         OverlayResult::Consumed
                     }
@@ -1937,6 +1968,7 @@ async fn handle_overlay_key(
                     purpose,
                     command_mode,
                     command_buf,
+                    original,
                 });
                 OverlayResult::Consumed
             } else {
@@ -1948,6 +1980,7 @@ async fn handle_overlay_key(
                     purpose,
                     command_mode: false,
                     command_buf: String::new(),
+                    original,
                 });
                 OverlayResult::Consumed
             }
@@ -2052,6 +2085,7 @@ async fn handle_overlay_key(
                             },
                             command_mode: false,
                             command_buf: String::new(),
+                            original: String::new(),
                         });
                     }
                     LineInputPurpose::EditSummary { topic_key } => match client
@@ -2363,6 +2397,7 @@ async fn handle_overlay_key(
                                 },
                                 command_mode: false,
                                 command_buf: String::new(),
+                                original: block.content.clone(),
                             });
                         }
                     }
@@ -3355,12 +3390,24 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App) {
         .title(title)
         .border_style(border_style);
     let inner_height = block_widget.inner(area).height as usize;
+    let total_lines = lines.len();
     let scroll_y = if !elem_starts.is_empty() && app.tab == DetailTab::Detail {
-        let target_line = elem_starts
+        let elem_start = elem_starts
             .get(app.detail_selected)
             .copied()
             .unwrap_or(0);
-        scroll_offset(target_line, inner_height) as u16
+        // Element end = next element's start, or total lines.
+        let elem_end = elem_starts
+            .get(app.detail_selected + 1)
+            .copied()
+            .unwrap_or(total_lines);
+        // Scroll so that elem_end is visible (i.e. the whole block fits).
+        let need_end_visible = scroll_offset(elem_end.saturating_sub(1), inner_height);
+        // But don't scroll past the element start.
+        let need_start_visible = elem_start;
+        // Take the larger of the two — ensures the end is visible,
+        // but if the element is taller than the viewport, show the start.
+        need_end_visible.min(need_start_visible.max(need_end_visible)) as u16
     } else {
         0
     };
@@ -3369,6 +3416,23 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App) {
         .block(block_widget)
         .scroll((scroll_y, 0));
     f.render_widget(p, area);
+
+    // Scrollbar (only when content overflows).
+    if total_lines > inner_height {
+        let mut scrollbar_state = ScrollbarState::new(total_lines)
+            .position(scroll_y as usize);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None);
+        // Render inside the block's inner area (inside borders).
+        let scrollbar_area = Rect::new(
+            area.x + area.width.saturating_sub(1),
+            area.y + 1,
+            1,
+            area.height.saturating_sub(2),
+        );
+        f.render_stateful_widget(scrollbar, scrollbar_area, &mut scrollbar_state);
+    }
 }
 
 fn tab_title(app: &App) -> String {
