@@ -227,8 +227,6 @@ struct App {
     focus: Focus,
     /// Selected element index in the right pane's detail view.
     detail_selected: usize,
-    /// Vertical scroll offset for the right pane (in lines).
-    detail_scroll: u16,
 
     // ── Edit mode ────────────────────────────────────────────────
     /// True while this client holds the daemon's editor-session lock.
@@ -266,7 +264,6 @@ impl App {
             caches: TopicCaches::default(),
             focus: Focus::Left,
             detail_selected: 0,
-            detail_scroll: 0,
             edit_mode: false,
             overlay: None,
         }
@@ -1866,14 +1863,17 @@ async fn handle_overlay_key(
                         OverlayResult::Consumed
                     }
                     KeyCode::Enter => {
-                        let cmd = command_buf.trim().to_string();
+                        // Strip the leading `:` from the buffer.
+                        let cmd = command_buf.trim_start_matches(':').trim().to_string();
                         match cmd.as_str() {
                             "w" | "wq" => {
                                 let content = unwrap_soft(textarea.lines());
                                 dispatch_text_save(app, client, purpose, content).await;
                             }
                             "q" | "q!" => {
-                                // Discard and close.
+                                // Discard and close. overlay is already None (taken).
+                                // Show a brief "discarded" notification.
+                                notify_ok(app, "Editor closed (changes discarded)".into());
                             }
                             _ => {
                                 // Unknown command — resume editing.
@@ -3355,19 +3355,18 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App) {
         .title(title)
         .border_style(border_style);
     let inner_height = block_widget.inner(area).height as usize;
-    let scroll_y = if app.focus == Focus::Right && !elem_starts.is_empty() {
+    let scroll_y = if !elem_starts.is_empty() && app.tab == DetailTab::Detail {
         let target_line = elem_starts
             .get(app.detail_selected)
             .copied()
             .unwrap_or(0);
         scroll_offset(target_line, inner_height) as u16
     } else {
-        app.detail_scroll
+        0
     };
 
     let p = Paragraph::new(lines)
         .block(block_widget)
-        .wrap(Wrap { trim: false })
         .scroll((scroll_y, 0));
     f.render_widget(p, area);
 }
