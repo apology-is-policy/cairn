@@ -11,9 +11,9 @@ use std::time::Duration;
 use std::collections::HashMap;
 
 use cairn_core::{
-    default_db_path, CairnClient, EdgeSummary, ExploreParams, ExploreResult, GraphStatusResult,
-    HistoryParams, HistoryResult, NearbyParams, NearbyResult, NodeSummary, SearchParams,
-    SearchResult, SearchResultItem, Topic,
+    default_db_path, CairnClient, CairnError, EdgeSummary, ExploreParams, ExploreResult,
+    GraphStatusResult, HistoryParams, HistoryResult, NearbyParams, NearbyResult, NodeSummary,
+    SearchParams, SearchResult, SearchResultItem, Topic,
 };
 use clap::Parser;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -193,6 +193,14 @@ struct App {
     search_active: bool,
     tab: DetailTab,
     caches: TopicCaches,
+
+    // ── Edit mode ────────────────────────────────────────────────
+    /// True while this client holds the daemon's editor-session lock.
+    /// When set, the header shows `[EDIT MODE]` in red, the footer shows
+    /// editing key hints, and Esc exits edit mode (instead of quitting).
+    edit_mode: bool,
+    /// Modal overlay that captures all key input while present.
+    overlay: Option<Overlay>,
 }
 
 impl App {
@@ -220,6 +228,8 @@ impl App {
             search_active: false,
             tab: DetailTab::Detail,
             caches: TopicCaches::default(),
+            edit_mode: false,
+            overlay: None,
         }
     }
 
@@ -307,6 +317,40 @@ impl App {
         self.fetch_active_tab(client).await;
     }
 
+    /// Re-fetch the full topic list and status from the daemon.
+    async fn refresh(&mut self, client: &CairnClient) {
+        match (client.graph_status().await, client.graph_view().await) {
+            (Ok(status), Ok(view)) => {
+                self.status = status;
+                let selected_key = self.selected_key();
+                let mut topics = view.topics;
+                topics.sort_by(|a, b| a.key.cmp(&b.key));
+                self.by_key = topics
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| (t.key.clone(), i))
+                    .collect();
+                self.all_topics = topics;
+                self.recompute_filter();
+                // Try to re-select the same topic.
+                if let Some(key) = selected_key {
+                    if let Some(row) = self
+                        .visible
+                        .iter()
+                        .position(|i| self.all_topics.get(*i).map(|t| &t.key) == Some(&key))
+                    {
+                        self.list_state.select(Some(row));
+                    }
+                }
+                self.caches = TopicCaches::default();
+                self.fetch_active_tab(client).await;
+            }
+            (Err(e), _) | (_, Err(e)) => {
+                self.caches.error = Some(format!("refresh: {e}"));
+            }
+        }
+    }
+
     async fn fetch_active_tab(&mut self, client: &CairnClient) {
         let Some(key) = self.selected_key() else {
             return;
@@ -387,6 +431,25 @@ enum ListJump {
     Last,
 }
 
+/// Modal overlays that capture all key input while active. The main event
+/// loop checks `app.overlay` first; when present, the overlay's key
+/// handler runs and the normal key dispatch is suppressed. This is the
+/// extension point for every dialog: edit confirmation, text input
+/// prompts, the command palette, and anything else that needs focus.
+#[derive(Debug, Clone)]
+enum Overlay {
+    /// The "enter edit mode?" red confirmation dialog. Shown on `e` in
+    /// browse mode. Enter confirms (acquires the lock), Esc cancels.
+    EditConfirm,
+    /// Notification toast — auto-dismissed on any keypress or after the
+    /// next draw cycle if the user just hit a key. Used for transient
+    /// success/error feedback.
+    Notification {
+        message: String,
+        is_error: bool,
+    },
+}
+
 // ── Event loop ────────────────────────────────────────────────────
 
 async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> anyhow::Result<()> {
@@ -403,20 +466,76 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
             continue;
         }
 
-        // Global quit chord works in any mode.
+        // Global quit chord works in any mode. Release the editor lock
+        // if held so the daemon unblocks immediately rather than waiting
+        // for the socket drop.
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            if app.edit_mode {
+                let _ = client.end_editor_session().await;
+            }
             return Ok(());
         }
 
+        // ── Overlay dispatch ─────────────────────────────────────
+        // Overlays capture ALL key input. The match either handles
+        // the key and continues, or falls through to normal dispatch.
+        if app.overlay.is_some() {
+            let overlay = app.overlay.clone().unwrap();
+            match overlay {
+                Overlay::EditConfirm => match key.code {
+                    KeyCode::Enter => {
+                        app.overlay = None;
+                        match client.begin_editor_session(Some("TUI edit session")).await {
+                            Ok(()) => {
+                                app.edit_mode = true;
+                            }
+                            Err(CairnError::EditorBusy { reason, since }) => {
+                                let msg = format!(
+                                    "Editor lock is held by another client since {} (reason: {})",
+                                    since.format("%H:%M:%S"),
+                                    reason.as_deref().unwrap_or("none")
+                                );
+                                app.overlay = Some(Overlay::Notification {
+                                    message: msg,
+                                    is_error: true,
+                                });
+                            }
+                            Err(e) => {
+                                app.overlay = Some(Overlay::Notification {
+                                    message: format!("Failed to acquire editor lock: {e}"),
+                                    is_error: true,
+                                });
+                            }
+                        }
+                    }
+                    KeyCode::Esc => {
+                        app.overlay = None;
+                    }
+                    _ => {}
+                },
+                Overlay::Notification { .. } => {
+                    // Any keypress dismisses a notification.
+                    app.overlay = None;
+                }
+            }
+            continue;
+        }
+
+        // ── Normal key dispatch ──────────────────────────────────
         let action = match app.mode {
-            Mode::Browse => handle_browse_key(key.code, key.modifiers),
+            Mode::Browse => handle_browse_key(key.code, key.modifiers, app.edit_mode),
             Mode::Filter => handle_text_key(key.code, TextTarget::Filter),
             Mode::Search => handle_text_key(key.code, TextTarget::Search),
         };
 
         match action {
             Action::None => {}
-            Action::Quit => return Ok(()),
+            Action::Quit => {
+                if app.edit_mode {
+                    let _ = client.end_editor_session().await;
+                }
+                return Ok(());
+            }
             Action::EnterFilter => {
                 app.mode = Mode::Filter;
                 app.search_active = false;
@@ -509,6 +628,20 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                 app.tab = app.tab.prev();
                 app.fetch_active_tab(client).await;
             }
+            Action::RequestEditMode => {
+                app.overlay = Some(Overlay::EditConfirm);
+            }
+            Action::ExitEditMode => {
+                let _ = client.end_editor_session().await;
+                app.edit_mode = false;
+                app.overlay = Some(Overlay::Notification {
+                    message: "Edit mode released. Agents can write again.".into(),
+                    is_error: false,
+                });
+            }
+            Action::Refresh => {
+                app.refresh(client).await;
+            }
         }
     }
 }
@@ -527,6 +660,12 @@ enum Action {
     SwitchTab(DetailTab),
     NextTab,
     PrevTab,
+    /// Show the edit-mode confirmation dialog.
+    RequestEditMode,
+    /// Leave edit mode (release the daemon lock).
+    ExitEditMode,
+    /// Re-fetch all data from the daemon.
+    Refresh,
 }
 
 #[derive(Clone, Copy)]
@@ -535,9 +674,11 @@ enum TextTarget {
     Search,
 }
 
-fn handle_browse_key(code: KeyCode, mods: KeyModifiers) -> Action {
+fn handle_browse_key(code: KeyCode, mods: KeyModifiers, edit_mode: bool) -> Action {
     match code {
-        KeyCode::Char('q') | KeyCode::Esc => Action::Quit,
+        KeyCode::Char('q') => Action::Quit,
+        KeyCode::Esc if edit_mode => Action::ExitEditMode,
+        KeyCode::Esc => Action::Quit,
         KeyCode::Char('j') | KeyCode::Down => Action::Move(1),
         KeyCode::Char('k') | KeyCode::Up => Action::Move(-1),
         KeyCode::Char('g') | KeyCode::Home => Action::Jump(ListJump::First),
@@ -551,6 +692,8 @@ fn handle_browse_key(code: KeyCode, mods: KeyModifiers) -> Action {
         KeyCode::BackTab => Action::PrevTab,
         KeyCode::Char('l') if !mods.contains(KeyModifiers::CONTROL) => Action::NextTab,
         KeyCode::Char('h') if !mods.contains(KeyModifiers::CONTROL) => Action::PrevTab,
+        KeyCode::Char('e') if !edit_mode => Action::RequestEditMode,
+        KeyCode::Char('R') => Action::Refresh,
         _ => Action::None,
     }
 }
@@ -580,12 +723,112 @@ fn draw(f: &mut Frame, app: &App) {
     draw_header(f, chunks[0], app);
     draw_body(f, chunks[1], app);
     draw_footer(f, chunks[2], app);
+
+    // Overlays render on top of everything else.
+    if let Some(overlay) = &app.overlay {
+        draw_overlay(f, overlay, f.area());
+    }
+}
+
+/// Render a modal overlay centered on the screen. Currently handles the
+/// edit-mode confirmation dialog (red, prominent) and notification toasts.
+fn draw_overlay(f: &mut Frame, overlay: &Overlay, area: Rect) {
+    match overlay {
+        Overlay::EditConfirm => {
+            let dialog_width = 54u16.min(area.width.saturating_sub(4));
+            let dialog_height = 9u16.min(area.height.saturating_sub(2));
+            let x = (area.width.saturating_sub(dialog_width)) / 2;
+            let y = (area.height.saturating_sub(dialog_height)) / 2;
+            let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
+
+            // Clear the area under the dialog.
+            let clear = Block::default().style(Style::default().bg(Color::Black));
+            f.render_widget(clear, dialog_area);
+
+            let lines = vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    "  ⚠  ENTER EDIT MODE",
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "  This will acquire an exclusive lock.",
+                    Style::default().fg(Color::White),
+                )),
+                Line::from(Span::styled(
+                    "  Agents will be blocked from writing",
+                    Style::default().fg(Color::White),
+                )),
+                Line::from(Span::styled(
+                    "  until you exit edit mode.",
+                    Style::default().fg(Color::White),
+                )),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled(
+                        "  [Enter]",
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(" confirm  ", Style::default().fg(Color::White)),
+                    Span::styled(
+                        "[Esc]",
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(" cancel", Style::default().fg(Color::White)),
+                ]),
+            ];
+
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Red))
+                .style(Style::default().bg(Color::DarkGray));
+            let paragraph = Paragraph::new(lines).block(block);
+            f.render_widget(paragraph, dialog_area);
+        }
+        Overlay::Notification { message, is_error } => {
+            let color = if *is_error { Color::Red } else { Color::Green };
+            let width = (message.len() as u16 + 6).min(area.width.saturating_sub(4));
+            let x = (area.width.saturating_sub(width)) / 2;
+            let y = area.height.saturating_sub(4);
+            let note_area = Rect::new(x, y, width, 3);
+
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(color))
+                .style(Style::default().bg(Color::Black));
+            let p = Paragraph::new(Line::from(Span::styled(
+                format!(" {message}"),
+                Style::default().fg(color),
+            )))
+            .block(block);
+            f.render_widget(p, note_area);
+        }
+    }
 }
 
 fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     let s = &app.status.stats;
-    let header = Paragraph::new(Line::from(vec![
+    let mut spans = vec![
         Span::styled("cairn", Style::default().add_modifier(Modifier::BOLD)),
+    ];
+    if app.edit_mode {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            "[EDIT MODE]",
+            Style::default()
+                .fg(Color::White)
+                .bg(Color::Red)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    spans.extend([
         Span::raw("  "),
         Span::styled(
             &app.status.db_path,
@@ -596,8 +839,21 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
             "{} active / {} total ({} deprecated, {} stale)",
             s.active, s.total, s.deprecated, s.stale_90d
         )),
-    ]))
-    .block(Block::default().borders(Borders::ALL).title(" cairn-tui "));
+    ]);
+    let title = if app.edit_mode {
+        " cairn-tui [EDITING] "
+    } else {
+        " cairn-tui "
+    };
+    let block = if app.edit_mode {
+        Block::default()
+            .borders(Borders::ALL)
+            .title(title)
+            .border_style(Style::default().fg(Color::Red))
+    } else {
+        Block::default().borders(Borders::ALL).title(title)
+    };
+    let header = Paragraph::new(Line::from(spans)).block(block);
     f.render_widget(header, area);
 }
 
@@ -915,12 +1171,23 @@ fn edge_line(self_key: &str, edge: &EdgeSummary) -> Line<'static> {
 
 fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
     let spans = match app.mode {
+        Mode::Browse if app.edit_mode => vec![
+            key_hint("j/k", "move"),
+            key_hint("h/l/tab", "tabs"),
+            key_hint("/", "filter"),
+            key_hint("?", "search"),
+            key_hint("R", "refresh"),
+            key_hint("esc", "exit edit"),
+            key_hint("q", "quit"),
+        ],
         Mode::Browse => vec![
             key_hint("j/k", "move"),
             key_hint("h/l/tab", "tabs"),
             key_hint("1/2/3", "detail/neigh/hist"),
             key_hint("/", "filter"),
             key_hint("?", "search"),
+            key_hint("e", "edit mode"),
+            key_hint("R", "refresh"),
             key_hint("q", "quit"),
         ],
         Mode::Filter => vec![
