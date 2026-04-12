@@ -60,7 +60,7 @@ After a few sessions, the graph is already useful. By session ten, the agent kno
 - **cairn-mcp** — MCP server binary (JSON-RPC over stdio), used by Claude Code
 - **cairn-cli** — CLI binary, used by you and by hook scripts
 - **cairn-server** — single-writer daemon that owns the DB and serves all clients over a Unix socket (auto-spawned by clients on first use)
-- **cairn-tui** — interactive terminal UI for browsing the graph
+- **cairn-tui** — interactive terminal UI for browsing and editing the graph (vim-like editor, command palette, exclusive edit-mode lock)
 - **SurrealDB embedded** — in-process database, no server, no network, single artifact on disk
 
 ## Setup
@@ -246,6 +246,8 @@ Run it after a Cairn update to confirm everything is in sync.
 
 Once the MCP server is connected, the agent operates automatically via the **behavioral contract** — a set of instructions returned by `graph_status` that tells the agent how to use the graph. No prompting required.
 
+The contract is **context-adaptive**: it adjusts its guidance based on the graph's health. A sparse graph (< 5 topics) gets a "bootstrapping" preamble urging aggressive cataloguing. A graph with > 30% stale topics gets a staleness warning. `prime` injects per-task notes when matched topics are stale or when no topics match at all. A healthy, well-maintained graph gets a clean contract with no situational noise.
+
 ### Automatic workflow
 
 1. **At task start**, the agent calls `graph_status` to get the contract and your voice, then calls `prime` with the task description to retrieve relevant context
@@ -289,6 +291,11 @@ The agent writes in **your voice**, using the personality you set during init. I
 | `forget` | Marks a topic as deprecated (soft delete). |
 | `rename` | Renames a topic key. Edges are preserved automatically. |
 | `rewrite` | Replaces all blocks in a topic. |
+| `set_tags` | Replace a topic's tags. |
+| `set_summary` | Replace a topic's search summary. |
+| `disconnect` | Remove a single edge between two topics. |
+| `delete_block` | Remove a block from a topic (content saved to history). |
+| `move_block` | Reorder a block within a topic without losing its ID. |
 | `history` | Shows the mutation audit log. |
 | `stats` | Graph overview with counts and rankings. |
 | `voice` | Reads or updates your voice/personality. |
@@ -450,6 +457,76 @@ cairn-cli search "retry" --json
 cairn-cli stats --json
 ```
 
+## How you use Cairn (TUI)
+
+`cairn-tui` is a full interactive terminal editor for your knowledge graph. Launch it from anywhere inside a project with a `.cairn/` directory:
+
+```bash
+cairn-tui
+```
+
+### Browsing
+
+The TUI opens in browse mode with two panes: a **topic list** on the left and a **detail view** on the right. Navigate with:
+
+| Key | Action |
+|-----|--------|
+| `j/k` | Move up/down in the focused pane |
+| `Tab` | Switch focus between left and right panes |
+| `Shift+Tab` | Cycle detail tabs (detail / neighbors / history) |
+| `1/2/3` | Jump to detail / neighbors / history tab |
+| `h/l` | Switch pane focus (h=left, l=right) |
+| `/` | Filter topics by name |
+| `?` | Full-text search (FTS) |
+| `Enter` | Open context menu for the selected element |
+| `:` | Open the command palette |
+| `R` | Refresh all data from the daemon |
+
+The right pane's detail view has selectable elements — navigate to a specific block, edge, title, or tag line and press `Enter` to see actions relevant to that element.
+
+### Edit mode
+
+Press `e` (or `Enter` → "Enter edit mode" from the context menu) to acquire an **exclusive editor lock** on the daemon. While you're editing, AI agents are blocked from writing — they can still read (`prime`, `search`, `stats`), but mutations return `EditorBusy` until you release the lock.
+
+A red confirmation dialog appears before the lock is acquired. The header shows `[EDIT MODE]` while active. Press `Esc` to release the lock and return to browse mode.
+
+### Editing operations
+
+All operations are accessible via direct keybinds in edit mode AND through the command palette (`:` → type to filter → Enter):
+
+| Key | Operation |
+|-----|-----------|
+| `e` | **Amend block** — edit a block's content in the vim-like editor |
+| `b` | **Add block** — append a new block to the selected topic |
+| `D` | **Delete block** — remove a block (with mandatory reason) |
+| `K/J` | **Move block** up/down within a topic |
+| `r` | **Rename topic** |
+| `d` | **Forget topic** — soft-delete with reason |
+| `t` | **Edit tags** — comma-separated |
+| `s` | **Edit summary** — in the full editor |
+| `V` | **Edit voice** — the developer personality |
+| `n` | **Learn new topic** — key → title → content |
+| `a` | **Add edge** — fuzzy topic picker → edge type → note |
+| `x` | **Remove edge** — pick from the topic's edges |
+
+When the right pane has a specific element selected (e.g., a block), pressing `Enter` shows a **context-sensitive menu** with only the relevant actions — and if you're not in edit mode, it prompts you to enter it first, then flows directly into the action.
+
+### The text editor
+
+Block content, voice, and summaries are edited in a **vim-like modal editor** built on `tui-textarea`:
+
+| Mode | Indicator | Behavior |
+|------|-----------|----------|
+| **NOR** (Normal) | Cyan `[NOR]` | `:` for commands, `i` for insert, `hjkl` movement, `g/G` top/bottom |
+| **INS** (Insert) | Green `[INS]` | Type freely, `Esc` returns to Normal |
+| **CMD** (Command) | Yellow `[CMD]` | `:w` save, `:q` quit, `:wq` save+quit, `:q!` force quit |
+
+The editor starts in Normal mode. `:w` saves and keeps the editor open (for voice/summary/learn) or updates the baseline (for amend — the actual save happens on `:wq` when the reason prompt appears). `:q` refuses to close if there are unsaved changes; use `:q!` to discard.
+
+### Command palette
+
+Press `:` in browse mode to open the command palette — a fuzzy-filtered list of every available action. **Context-relevant actions sort to the top** based on the currently selected element, so the most useful commands are always first. Type to narrow, `j/k` to navigate, `Enter` to dispatch.
+
 ## Edge types
 
 | Edge | Meaning | Example |
@@ -489,7 +566,8 @@ Override paths anywhere with `--db /absolute/path` or the `CAIRN_DB` environment
 3. **Semantic tools, not CRUD.** The agent thinks in terms of `learn`, `connect`, `amend` — never "create node" or "insert edge."
 4. **Your voice.** Entries carry tone, opinion, and personality. *"This module is a nightmare, the abstraction is wrong, but here's how to survive it"* is a valid and encouraged entry.
 5. **Graceful cold start.** An empty graph returns nothing from `prime`. The agent works normally. By session three the graph is already useful.
-6. **No cloud.** Everything is local. There is a small Unix-socket daemon (`cairn-server`) because SurrealKV is single-writer and multiple Claude Code sessions need to share one graph, but it's auto-spawned on first use by any client and holds an exclusive flock. You never start it manually; `install.sh` SIGTERMs the running daemon on upgrade so the next client picks up the new binary.
+6. **No cloud.** Everything is local. There is a small Unix-socket daemon (`cairn-server`) because SurrealKV is single-writer and multiple Claude Code sessions need to share one graph, but it's auto-spawned on first use by any client and holds an exclusive flock. You never start it manually; `install.sh` SIGTERMs the running daemon on upgrade and clients auto-reconnect transparently.
+7. **Human in the loop.** The TUI lets you browse, edit, and curate the graph directly — without the agent. An exclusive editor-session lock blocks agent writes while you're editing, but reads stay available. The graph is your personal database; the agent is one writer among two.
 
 ## Platform support
 
