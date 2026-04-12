@@ -176,6 +176,156 @@ fn estimate_tokens(text: &str) -> usize {
 }
 
 /// Compose and return relevant context for a task.
+/// Build a pre-flight briefing from the graph structure around matched topics.
+///
+/// Traverses 2-hop edges to find:
+/// - **Constraints**: gotcha edges with severity and notes
+/// - **Impact radius**: reverse depends_on (what depends on your area)
+/// - **Contradictions**: contradicts edges between or near matched topics
+/// - **War stories**: war_story edges within 2 hops
+/// - **Stale areas**: matched topics not updated in 30+ days
+///
+/// Returns formatted markdown sections, or empty string if nothing notable.
+async fn build_preflight(
+    db: &CairnDb,
+    matched_keys: &[String],
+    _task: &str,
+) -> Result<String> {
+    use std::fmt::Write;
+
+    // Get all edges within 2 hops of matched topics.
+    let hop1_edges = search::edges_for_matched(db, matched_keys).await?;
+
+    // Collect neighbor keys for 2nd hop.
+    let mut hop1_keys: HashSet<String> = HashSet::new();
+    for e in &hop1_edges {
+        hop1_keys.insert(e.from.clone());
+        hop1_keys.insert(e.to.clone());
+    }
+    let hop2_keys: Vec<String> = hop1_keys
+        .iter()
+        .filter(|k| !matched_keys.contains(k))
+        .cloned()
+        .collect();
+    let hop2_edges = if !hop2_keys.is_empty() {
+        search::edges_for_matched(db, &hop2_keys).await?
+    } else {
+        vec![]
+    };
+
+    let matched_set: HashSet<&str> = matched_keys.iter().map(|s| s.as_str()).collect();
+    let mut sections = String::new();
+
+    // ── Constraints (gotchas within 2 hops) ──
+    let mut gotchas: Vec<String> = Vec::new();
+    for e in hop1_edges.iter().chain(hop2_edges.iter()) {
+        if e.edge_type == "gotcha" {
+            let involves_matched =
+                matched_set.contains(e.from.as_str()) || matched_set.contains(e.to.as_str());
+            if involves_matched {
+                gotchas.push(format!(
+                    "- {} → {} (gotcha): {}",
+                    e.from, e.to, e.note
+                ));
+            }
+        }
+    }
+    if !gotchas.is_empty() {
+        let _ = writeln!(sections, "### Constraints (gotchas)\n{}\n", gotchas.join("\n"));
+    }
+
+    // ── Impact radius (reverse depends_on) ──
+    let mut dependents: Vec<String> = Vec::new();
+    for e in &hop1_edges {
+        if e.edge_type == "depends_on" && matched_set.contains(e.to.as_str()) {
+            dependents.push(format!(
+                "- {} depends on {} — {}",
+                e.from, e.to, e.note
+            ));
+        }
+    }
+    // Transitive dependents (2nd hop)
+    for e in &hop2_edges {
+        if e.edge_type == "depends_on" {
+            // Check if to_key is a hop-1 dependent
+            let is_transitive = hop1_edges.iter().any(|h1| {
+                h1.edge_type == "depends_on"
+                    && h1.from == e.to
+                    && matched_set.contains(h1.to.as_str())
+            });
+            if is_transitive {
+                dependents.push(format!(
+                    "- {} depends on {} (transitive) — {}",
+                    e.from, e.to, e.note
+                ));
+            }
+        }
+    }
+    if !dependents.is_empty() {
+        let _ = writeln!(
+            sections,
+            "### Impact radius (what depends on your area)\n{}\n",
+            dependents.join("\n")
+        );
+    }
+
+    // ── War stories ──
+    let mut war_stories: Vec<String> = Vec::new();
+    for e in hop1_edges.iter().chain(hop2_edges.iter()) {
+        if e.edge_type == "war_story" {
+            let involves = matched_set.contains(e.from.as_str())
+                || matched_set.contains(e.to.as_str());
+            if involves {
+                war_stories.push(format!(
+                    "- {} ↔ {} (war story): {}",
+                    e.from, e.to, e.note
+                ));
+            }
+        }
+    }
+    if !war_stories.is_empty() {
+        let _ = writeln!(sections, "### War stories\n{}\n", war_stories.join("\n"));
+    }
+
+    // ── Contradictions ──
+    let mut contradictions: Vec<String> = Vec::new();
+    for e in &hop1_edges {
+        if e.edge_type == "contradicts" {
+            contradictions.push(format!(
+                "- {} contradicts {} — {}",
+                e.from, e.to, e.note
+            ));
+        }
+    }
+    if !contradictions.is_empty() {
+        let _ = writeln!(
+            sections,
+            "### Contradictions (verify which is current)\n{}\n",
+            contradictions.join("\n")
+        );
+    }
+
+    // ── Stale areas ──
+    let now = chrono::Utc::now();
+    let mut stale: Vec<String> = Vec::new();
+    for key in matched_keys {
+        if let Some(topic) = crate::ops::get_topic_by_key(db, key).await? {
+            let age_days = now.signed_duration_since(topic.updated_at).num_days();
+            if age_days > 30 {
+                stale.push(format!(
+                    "- {} ({}d since last update) — verify before relying on it",
+                    key, age_days
+                ));
+            }
+        }
+    }
+    if !stale.is_empty() {
+        let _ = writeln!(sections, "### Stale areas\n{}\n", stale.join("\n"));
+    }
+
+    Ok(sections)
+}
+
 pub async fn prime(db: &CairnDb, params: PrimeParams) -> Result<PrimeResult> {
     let prefs = get_preferences(db).await?;
     let max_tokens = params.max_tokens.unwrap_or(prefs.prime_max_tokens) as usize;
@@ -313,7 +463,31 @@ pub async fn prime(db: &CairnDb, params: PrimeParams) -> Result<PrimeResult> {
         }
     }
 
-    // 6. Situational notes based on what was (or wasn't) matched.
+    // 6. Pre-flight briefing — synthesize graph-structural guidance
+    //    from edges (gotchas, dependencies, contradictions, war stories)
+    //    within 2 hops of matched topics. This turns the graph topology
+    //    into active warnings the agent reads before starting work.
+    if !matched_topics.is_empty() && token_count < max_tokens {
+        let preflight =
+            build_preflight(db, &matched_topics, &params.task).await?;
+        if !preflight.is_empty() {
+            let section = format!("## Pre-flight for: \"{}\"\n\n{}\n", params.task, preflight);
+            let section_tokens = estimate_tokens(&section);
+            if token_count + section_tokens <= max_tokens {
+                // Insert BEFORE topic content — it's guidance, not reference.
+                // Find the position after the voice section.
+                let insert_pos = if context_parts.is_empty() {
+                    0
+                } else {
+                    1 // After voice
+                };
+                context_parts.insert(insert_pos, section);
+                token_count += section_tokens;
+            }
+        }
+    }
+
+    // 7. Situational notes based on what was (or wasn't) matched.
     let mut notes: Vec<String> = Vec::new();
 
     if matched_topics.is_empty() && !keywords.is_empty() {

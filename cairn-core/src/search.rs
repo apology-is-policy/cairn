@@ -151,6 +151,22 @@ async fn topic_summaries(db: &CairnDb, keys: &[String]) -> Result<Vec<TopicSumma
     Ok(rows)
 }
 
+/// Public wrapper around `edges_for_topics` — returns all edges touching
+/// any of the given topic keys. Used by `prime::build_preflight` to
+/// traverse the graph structure for pre-flight guidance.
+pub async fn edges_for_matched(db: &CairnDb, keys: &[String]) -> Result<Vec<EdgeSummary>> {
+    let rows = edges_for_topics(db, keys).await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| EdgeSummary {
+            from: r.from_key,
+            to: r.to_key,
+            edge_type: r.edge_type,
+            note: r.note,
+        })
+        .collect())
+}
+
 // ── Operations ───────────────────────────────────────────────────
 
 /// Full-text search across all topic content.
