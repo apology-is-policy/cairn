@@ -73,6 +73,7 @@ pub enum CairnRequest {
     ListSnapshots,
 
     // New ops (v4)
+    SetSummary(SetSummaryParams),
     SetTags(SetTagsParams),
     Disconnect(DisconnectParams),
     MoveBlock(MoveBlockParams),
@@ -111,6 +112,7 @@ impl CairnRequest {
             | SetPreferences { .. }
             | Restore(_)
             | ImportJson { .. }
+            | SetSummary(_)
             | SetTags(_)
             | Disconnect(_)
             | MoveBlock(_) => true,

@@ -110,6 +110,10 @@ impl Cairn {
         ops::rename(&self.db, params).await
     }
 
+    pub async fn set_summary(&self, params: SetSummaryParams) -> Result<SetSummaryResult> {
+        ops::set_summary(&self.db, params).await
+    }
+
     pub async fn set_tags(&self, params: SetTagsParams) -> Result<SetTagsResult> {
         ops::set_tags(&self.db, params).await
     }

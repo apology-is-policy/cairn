@@ -515,7 +515,12 @@ enum ListJump {
 enum Overlay {
     /// The "enter edit mode?" red confirmation dialog. Shown on `e` in
     /// browse mode. Enter confirms (acquires the lock), Esc cancels.
-    EditConfirm,
+    /// If `pending_action` is set, that action is dispatched immediately
+    /// after the lock is acquired — so pressing Enter on a block while
+    /// not in edit mode flows directly into amend after confirming.
+    EditConfirm {
+        pending_action: Option<Action>,
+    },
     /// Notification toast — auto-dismissed on any keypress.
     Notification {
         message: String,
@@ -578,6 +583,9 @@ enum TextInputPurpose {
         topic_key: String,
         title: String,
     },
+    AddBlockContent {
+        topic_key: String,
+    },
 }
 
 /// What the LineInput overlay should do with its content when confirmed.
@@ -607,6 +615,9 @@ enum LineInputPurpose {
         edge_type: String,
     },
     EditTags {
+        topic_key: String,
+    },
+    EditSummary {
         topic_key: String,
     },
 }
@@ -784,6 +795,22 @@ fn all_palette_commands() -> Vec<PaletteCommand> {
             description: "Move the first block down one position",
             key_hint: Some("J"),
             action: Action::MoveBlockDown,
+            edit_only: true,
+            browse_only: false,
+        },
+        PaletteCommand {
+            name: "Edit summary",
+            description: "Edit the selected topic's search summary",
+            key_hint: Some("s"),
+            action: Action::EditSummary,
+            edit_only: true,
+            browse_only: false,
+        },
+        PaletteCommand {
+            name: "Add block",
+            description: "Append a new block to the selected topic",
+            key_hint: Some("b"),
+            action: Action::AddBlock,
             edit_only: true,
             browse_only: false,
         },
@@ -1002,7 +1029,9 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                 app.fetch_active_tab(client).await;
             }
             Action::RequestEditMode => {
-                app.overlay = Some(Overlay::EditConfirm);
+                app.overlay = Some(Overlay::EditConfirm {
+                    pending_action: None,
+                });
             }
             Action::ExitEditMode => {
                 let _ = client.end_editor_session().await;
@@ -1014,6 +1043,39 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
             }
             Action::Refresh => {
                 app.refresh(client).await;
+            }
+            Action::EditSummary => {
+                if require_edit_mode(app, action) {
+                    // Will re-dispatch after lock is acquired.
+                } else if let Some(detail) = &app.caches.detail {
+                    let topic_key = detail.topic.key.clone();
+                    let current = detail.topic.summary.clone();
+                    app.overlay = Some(Overlay::LineInput {
+                        title: format!("Summary for '{}'", topic_key),
+                        buffer: current,
+                        purpose: LineInputPurpose::EditSummary { topic_key },
+                    });
+                } else {
+                    notify_err(app, "Select a topic first".into());
+                }
+            }
+            Action::AddBlock => {
+                if require_edit_mode(app, action) {
+                    // Will re-dispatch after lock is acquired.
+                } else if let Some(detail) = &app.caches.detail {
+                    let topic_key = detail.topic.key.clone();
+                    let mut textarea =
+                        tui_textarea::TextArea::new(vec![String::new()]);
+                    textarea.set_cursor_line_style(Style::default());
+                    textarea.set_style(Style::default().fg(Color::White));
+                    app.overlay = Some(Overlay::TextInput {
+                        title: format!("New block in '{}'", topic_key),
+                        textarea: Box::new(textarea),
+                        purpose: TextInputPurpose::AddBlockContent { topic_key },
+                    });
+                } else {
+                    notify_err(app, "Select a topic first".into());
+                }
             }
             Action::ToggleFocus => {
                 app.focus = match app.focus {
@@ -1039,11 +1101,8 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                 });
             }
             Action::AmendBlock => {
-                if !app.edit_mode {
-                    app.overlay = Some(Overlay::Notification {
-                        message: "Enter edit mode first (press e)".into(),
-                        is_error: true,
-                    });
+                if require_edit_mode(app, action) {
+                    // Will re-dispatch after lock is acquired.
                 } else if let Some(detail) = &app.caches.detail {
                     let topic_key = detail.topic.key.clone();
 
@@ -1124,11 +1183,8 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                 }
             }
             Action::RenameTopic => {
-                if !app.edit_mode {
-                    app.overlay = Some(Overlay::Notification {
-                        message: "Enter edit mode first (press e)".into(),
-                        is_error: true,
-                    });
+                if require_edit_mode(app, action) {
+                    // Will re-dispatch after lock is acquired.
                 } else if let Some(key) = app.selected_key() {
                     app.overlay = Some(Overlay::LineInput {
                         title: format!("Rename '{}' → new key", key),
@@ -1143,11 +1199,8 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                 }
             }
             Action::ForgetTopic => {
-                if !app.edit_mode {
-                    app.overlay = Some(Overlay::Notification {
-                        message: "Enter edit mode first (press e)".into(),
-                        is_error: true,
-                    });
+                if require_edit_mode(app, action) {
+                    // Will re-dispatch after lock is acquired.
                 } else if let Some(key) = app.selected_key() {
                     app.overlay = Some(Overlay::LineInput {
                         title: format!("Forget '{}' — reason (required)", key),
@@ -1162,11 +1215,8 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                 }
             }
             Action::EditVoice => {
-                if !app.edit_mode {
-                    app.overlay = Some(Overlay::Notification {
-                        message: "Enter edit mode first (press e)".into(),
-                        is_error: true,
-                    });
+                if require_edit_mode(app, action) {
+                    // Will re-dispatch after lock is acquired.
                 } else {
                     match client.get_voice().await {
                         Ok(voice_opt) => {
@@ -1193,11 +1243,8 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                 }
             }
             Action::ManualCheckpoint => {
-                if !app.edit_mode {
-                    app.overlay = Some(Overlay::Notification {
-                        message: "Enter edit mode first (press e)".into(),
-                        is_error: true,
-                    });
+                if require_edit_mode(app, action) {
+                    // Will re-dispatch after lock is acquired.
                 } else {
                     app.overlay = Some(Overlay::LineInput {
                         title: "Checkpoint session label".into(),
@@ -1210,11 +1257,8 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                 }
             }
             Action::LearnNewTopic => {
-                if !app.edit_mode {
-                    app.overlay = Some(Overlay::Notification {
-                        message: "Enter edit mode first (press e)".into(),
-                        is_error: true,
-                    });
+                if require_edit_mode(app, action) {
+                    // Will re-dispatch after lock is acquired.
                 } else {
                     app.overlay = Some(Overlay::LineInput {
                         title: "New topic key (e.g. payments/retry)".into(),
@@ -1224,11 +1268,8 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                 }
             }
             Action::AddEdge => {
-                if !app.edit_mode {
-                    app.overlay = Some(Overlay::Notification {
-                        message: "Enter edit mode first (press e)".into(),
-                        is_error: true,
-                    });
+                if require_edit_mode(app, action) {
+                    // Will re-dispatch after lock is acquired.
                 } else if let Some(key) = app.selected_key() {
                     app.overlay = Some(Overlay::LineInput {
                         title: format!("Edge from '{}' → target topic key", key),
@@ -1243,8 +1284,8 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                 }
             }
             Action::EditTags => {
-                if !app.edit_mode {
-                    notify_err(app, "Enter edit mode first (press e)".into());
+                if require_edit_mode(app, action) {
+                    // Will re-dispatch after lock is acquired.
                 } else if let Some(detail) = &app.caches.detail {
                     let topic_key = detail.topic.key.clone();
                     let current = detail.topic.tags.join(", ");
@@ -1258,8 +1299,8 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                 }
             }
             Action::RemoveEdge => {
-                if !app.edit_mode {
-                    notify_err(app, "Enter edit mode first (press e)".into());
+                if require_edit_mode(app, action) {
+                    // Will re-dispatch after lock is acquired.
                 } else if let Some(detail) = &app.caches.detail {
                     // If the right pane has a specific edge selected, remove
                     // it directly without the picker.
@@ -1331,8 +1372,8 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                 }
             }
             Action::MoveBlockUp | Action::MoveBlockDown => {
-                if !app.edit_mode {
-                    notify_err(app, "Enter edit mode first (press e)".into());
+                if require_edit_mode(app, action) {
+                    // Will re-dispatch after lock is acquired.
                 } else if let Some(detail) = &app.caches.detail {
                     let topic_key = detail.topic.key.clone();
                     let blocks = &detail.topic.blocks;
@@ -1464,6 +1505,10 @@ enum Action {
     MoveBlockUp,
     /// Move a block down within the selected topic.
     MoveBlockDown,
+    /// Edit the summary of the selected topic.
+    EditSummary,
+    /// Add a new block to the selected topic.
+    AddBlock,
     /// Toggle focus between left and right panes.
     ToggleFocus,
     /// Open context menu for the selected element.
@@ -1514,6 +1559,8 @@ fn handle_browse_key(code: KeyCode, mods: KeyModifiers, edit_mode: bool, focus: 
         KeyCode::Char('a') if edit_mode => Action::AddEdge,
         KeyCode::Char('t') if edit_mode => Action::EditTags,
         KeyCode::Char('x') if edit_mode => Action::RemoveEdge,
+        KeyCode::Char('s') if edit_mode => Action::EditSummary,
+        KeyCode::Char('b') if edit_mode => Action::AddBlock,
         KeyCode::Char('K') if edit_mode => Action::MoveBlockUp,
         KeyCode::Char('J') if edit_mode => Action::MoveBlockDown,
         KeyCode::Char('e') => Action::RequestEditMode,
@@ -1565,6 +1612,14 @@ fn build_context_menu(app: &App) -> Vec<ContextMenuItem> {
                         label: "Remove edge".into(),
                         action: Action::RemoveEdge,
                     });
+                    items.push(ContextMenuItem {
+                        label: "Add block".into(),
+                        action: Action::AddBlock,
+                    });
+                    items.push(ContextMenuItem {
+                        label: "Edit summary".into(),
+                        action: Action::EditSummary,
+                    });
                 }
                 // Read-only actions always available.
                 items.push(ContextMenuItem {
@@ -1602,7 +1657,12 @@ fn build_context_menu(app: &App) -> Vec<ContextMenuItem> {
                         }
                     }
                     DetailElement::Summary => {
-                        // No edit action for summary yet — it's auto-generated.
+                        if app.edit_mode {
+                            items.push(ContextMenuItem {
+                                label: "Edit summary".into(),
+                                action: Action::EditSummary,
+                            });
+                        }
                     }
                     DetailElement::Block { .. } => {
                         if app.edit_mode {
@@ -1644,11 +1704,16 @@ async fn handle_overlay_key(
     // Take ownership so we can match without borrowing app.
     let overlay = app.overlay.take().unwrap();
     match overlay {
-        Overlay::EditConfirm => match key.code {
+        Overlay::EditConfirm { pending_action } => match key.code {
             KeyCode::Enter => {
                 match client.begin_editor_session(Some("TUI edit session")).await {
                     Ok(()) => {
                         app.edit_mode = true;
+                        // If an action was pending (e.g. user pressed Enter
+                        // on a block while not in edit mode), dispatch it now.
+                        if let Some(action) = pending_action {
+                            return OverlayResult::Dispatch(action);
+                        }
                     }
                     Err(CairnError::EditorBusy { reason, since }) => {
                         app.overlay = Some(Overlay::Notification {
@@ -1771,6 +1836,34 @@ async fn handle_overlay_key(
                                 app.refresh(client).await;
                             }
                             Err(e) => notify_err(app, format!("Learn failed: {e}")),
+                        }
+                    }
+                    TextInputPurpose::AddBlockContent { topic_key } => {
+                        if content.trim().is_empty() {
+                            notify_err(app, "Block content cannot be empty".into());
+                        } else {
+                            match client
+                                .learn(cairn_core::LearnParams {
+                                    topic_key: topic_key.clone(),
+                                    title: None,
+                                    summary: None,
+                                    content,
+                                    voice: None,
+                                    tags: vec![],
+                                    position: cairn_core::Position::End,
+                                })
+                                .await
+                            {
+                                Ok(r) => {
+                                    notify_ok(app, format!(
+                                        "Added block {} to '{}'",
+                                        r.block_id, r.topic_key
+                                    ));
+                                    app.caches = TopicCaches::default();
+                                    app.fetch_active_tab(client).await;
+                                }
+                                Err(e) => notify_err(app, format!("Add block failed: {e}")),
+                            }
                         }
                     }
                 }
@@ -1897,6 +1990,19 @@ async fn handle_overlay_key(
                             selected: 0,
                         });
                     }
+                    LineInputPurpose::EditSummary { topic_key } => match client
+                        .set_summary(cairn_core::SetSummaryParams {
+                            topic_key, summary: value,
+                        })
+                        .await
+                    {
+                        Ok(r) => {
+                            notify_ok(app, format!("Summary updated for '{}'", r.topic_key));
+                            app.caches = TopicCaches::default();
+                            app.fetch_active_tab(client).await;
+                        }
+                        Err(e) => notify_err(app, format!("Set summary failed: {e}")),
+                    },
                     LineInputPurpose::EditTags { topic_key } => {
                         let tags: Vec<String> = value
                             .split(',')
@@ -2260,6 +2366,21 @@ fn scroll_offset(selected: usize, viewport_height: usize) -> usize {
     }
 }
 
+/// If not in edit mode, show the edit confirmation dialog with a pending
+/// action that will fire after the lock is acquired. Returns true if the
+/// dialog was shown (caller should stop processing), false if already in
+/// edit mode (caller should proceed).
+fn require_edit_mode(app: &mut App, pending: Action) -> bool {
+    if app.edit_mode {
+        false
+    } else {
+        app.overlay = Some(Overlay::EditConfirm {
+            pending_action: Some(pending),
+        });
+        true
+    }
+}
+
 fn notify_ok(app: &mut App, message: String) {
     app.overlay = Some(Overlay::Notification {
         message,
@@ -2278,7 +2399,7 @@ fn notify_err(app: &mut App, message: String) {
 fn draw_overlay(f: &mut Frame, app: &App, area: Rect) {
     let overlay = app.overlay.as_ref().unwrap();
     match overlay {
-        Overlay::EditConfirm => {
+        Overlay::EditConfirm { .. } => {
             let dialog_width = 54u16.min(area.width.saturating_sub(4));
             let dialog_height = 9u16.min(area.height.saturating_sub(2));
             let x = (area.width.saturating_sub(dialog_width)) / 2;

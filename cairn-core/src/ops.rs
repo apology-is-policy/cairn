@@ -636,6 +636,39 @@ pub async fn set_tags(db: &CairnDb, params: SetTagsParams) -> Result<SetTagsResu
     })
 }
 
+/// Replace a topic's summary.
+pub async fn set_summary(db: &CairnDb, params: SetSummaryParams) -> Result<SetSummaryResult> {
+    let _topic = get_topic(db, &params.topic_key)
+        .await?
+        .ok_or_else(|| CairnError::TopicNotFound(params.topic_key.clone()))?;
+
+    db.db
+        .query(
+            "UPDATE topic SET
+                summary = $summary,
+                updated_at = time::now()
+            WHERE key = $key",
+        )
+        .bind(("summary", params.summary.clone()))
+        .bind(("key", params.topic_key.clone()))
+        .await
+        .map_err(|e| CairnError::Db(e.to_string()))?;
+
+    write_history(
+        db,
+        "set_summary",
+        &format!("topic:{}", params.topic_key),
+        "summary updated",
+        None,
+    )
+    .await?;
+
+    Ok(SetSummaryResult {
+        topic_key: params.topic_key,
+        summary: params.summary,
+    })
+}
+
 /// Remove a single edge between two topics.
 pub async fn disconnect(db: &CairnDb, params: DisconnectParams) -> Result<DisconnectResult> {
     let from_id = get_topic_record_id(db, &params.from_key)

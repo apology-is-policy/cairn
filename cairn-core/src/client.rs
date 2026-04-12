@@ -310,6 +310,10 @@ impl CairnClient {
 
     // ── New ops (v4) ──────────────────────────────────────────────
 
+    pub async fn set_summary(&self, params: SetSummaryParams) -> Result<SetSummaryResult> {
+        self.call(CairnRequest::SetSummary(params)).await
+    }
+
     pub async fn set_tags(&self, params: SetTagsParams) -> Result<SetTagsResult> {
         self.call(CairnRequest::SetTags(params)).await
     }

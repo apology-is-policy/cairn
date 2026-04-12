@@ -302,6 +302,13 @@ pub struct SetTagsParams {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct SetSummaryParams {
+    pub topic_key: String,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DisconnectParams {
     pub from_key: String,
     pub to_key: String,
@@ -491,6 +498,12 @@ pub struct RenameResult {
 pub struct SetTagsResult {
     pub topic_key: String,
     pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetSummaryResult {
+    pub topic_key: String,
+    pub summary: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
