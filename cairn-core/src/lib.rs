@@ -110,6 +110,18 @@ impl Cairn {
         ops::rename(&self.db, params).await
     }
 
+    pub async fn set_tags(&self, params: SetTagsParams) -> Result<SetTagsResult> {
+        ops::set_tags(&self.db, params).await
+    }
+
+    pub async fn disconnect(&self, params: DisconnectParams) -> Result<DisconnectResult> {
+        ops::disconnect(&self.db, params).await
+    }
+
+    pub async fn move_block(&self, params: MoveBlockParams) -> Result<MoveBlockResult> {
+        ops::move_block(&self.db, params).await
+    }
+
     pub async fn reset(&self) -> Result<()> {
         ops::reset(&self.db).await
     }

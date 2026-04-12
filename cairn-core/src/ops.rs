@@ -601,6 +601,155 @@ pub async fn get_topic_by_key(db: &CairnDb, key: &str) -> Result<Option<Topic>> 
     get_topic(db, key).await
 }
 
+// ── New ops (v4) ─────────────────────────────────────────────────
+
+/// Replace a topic's tags wholesale.
+pub async fn set_tags(db: &CairnDb, params: SetTagsParams) -> Result<SetTagsResult> {
+    let _topic = get_topic(db, &params.topic_key)
+        .await?
+        .ok_or_else(|| CairnError::TopicNotFound(params.topic_key.clone()))?;
+
+    db.db
+        .query(
+            "UPDATE topic SET
+                tags = $tags,
+                updated_at = time::now()
+            WHERE key = $key",
+        )
+        .bind(("tags", params.tags.clone()))
+        .bind(("key", params.topic_key.clone()))
+        .await
+        .map_err(|e| CairnError::Db(e.to_string()))?;
+
+    write_history(
+        db,
+        "set_tags",
+        &format!("topic:{}", params.topic_key),
+        &format!("tags set to [{}]", params.tags.join(", ")),
+        None,
+    )
+    .await?;
+
+    Ok(SetTagsResult {
+        topic_key: params.topic_key,
+        tags: params.tags,
+    })
+}
+
+/// Remove a single edge between two topics.
+pub async fn disconnect(db: &CairnDb, params: DisconnectParams) -> Result<DisconnectResult> {
+    let from_id = get_topic_record_id(db, &params.from_key)
+        .await?
+        .ok_or_else(|| CairnError::TopicNotFound(params.from_key.clone()))?;
+    let to_id = get_topic_record_id(db, &params.to_key)
+        .await?
+        .ok_or_else(|| CairnError::TopicNotFound(params.to_key.clone()))?;
+
+    let table = params.edge_type.table_name();
+
+    // Find the edge.
+    let query =
+        format!("SELECT VALUE id FROM {table} WHERE in = {from_id} AND out = {to_id} LIMIT 1");
+    let mut res = db
+        .db
+        .query(&query)
+        .await
+        .map_err(|e| CairnError::Db(e.to_string()))?;
+    let existing: Option<surrealdb::sql::Thing> =
+        res.take(0).map_err(|e| CairnError::Db(e.to_string()))?;
+
+    let action = if let Some(edge_id) = existing {
+        let del = format!("DELETE {edge_id}");
+        db.db
+            .query(&del)
+            .await
+            .map_err(|e| CairnError::Db(e.to_string()))?;
+        "deleted"
+    } else {
+        "not_found"
+    };
+
+    write_history(
+        db,
+        "disconnect",
+        &format!("{}:{}->{}", table, params.from_key, params.to_key),
+        &format!("{action} {table} edge"),
+        None,
+    )
+    .await?;
+
+    Ok(DisconnectResult {
+        edge: table.into(),
+        from: params.from_key,
+        to: params.to_key,
+        action: action.into(),
+    })
+}
+
+/// Move a block to a new position within its topic.
+pub async fn move_block(db: &CairnDb, params: MoveBlockParams) -> Result<MoveBlockResult> {
+    let mut topic = get_topic(db, &params.topic_key)
+        .await?
+        .ok_or_else(|| CairnError::TopicNotFound(params.topic_key.clone()))?;
+
+    // Find and remove the block from its current position.
+    let idx = topic
+        .blocks
+        .iter()
+        .position(|b| b.id == params.block_id)
+        .ok_or_else(|| {
+            CairnError::BlockNotFound(params.block_id.clone(), params.topic_key.clone())
+        })?;
+    let block = topic.blocks.remove(idx);
+
+    // Insert at the new position.
+    let new_idx = match &params.position {
+        Position::Start => 0,
+        Position::End => topic.blocks.len(),
+        Position::After(after_id) => {
+            let after_idx = topic
+                .blocks
+                .iter()
+                .position(|b| b.id == *after_id)
+                .ok_or_else(|| {
+                    CairnError::BlockNotFound(after_id.clone(), params.topic_key.clone())
+                })?;
+            after_idx + 1
+        }
+    };
+    topic.blocks.insert(new_idx, block);
+
+    let blocks_json =
+        serde_json::to_string(&topic.blocks).map_err(|e| CairnError::Db(e.to_string()))?;
+
+    db.db
+        .query(
+            "UPDATE topic SET
+                blocks = $blocks,
+                updated_at = time::now()
+            WHERE key = $key",
+        )
+        .bind(("blocks", blocks_json))
+        .bind(("key", params.topic_key.clone()))
+        .await
+        .map_err(|e| CairnError::Db(e.to_string()))?;
+
+    write_history(
+        db,
+        "move_block",
+        &format!("topic:{}", params.topic_key),
+        &format!("moved block {} to position {}", params.block_id, new_idx),
+        None,
+    )
+    .await?;
+
+    Ok(MoveBlockResult {
+        topic_key: params.topic_key,
+        block_id: params.block_id,
+        new_position: new_idx,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

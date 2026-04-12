@@ -440,6 +440,10 @@ async fn dispatch(
             .map(|(t, e)| serde_json::json!([t, e])),
         ListSnapshots => cairn.list_snapshots().map(|v| serde_json::json!(v)),
 
+        SetTags(p) => to_val(cairn.set_tags(p).await),
+        Disconnect(p) => to_val(cairn.disconnect(p).await),
+        MoveBlock(p) => to_val(cairn.move_block(p).await),
+
         // Already handled above.
         BeginEditorSession(_) | EndEditorSession | EditorSessionStatus => {
             unreachable!("editor-session control RPCs handled above")

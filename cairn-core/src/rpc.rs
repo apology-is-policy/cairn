@@ -23,7 +23,8 @@ use crate::types::*;
 ///   error payloads (used by `EditorBusy` to carry `since` and `reason`).
 ///   The bump is additive — old daemons reject the new variants cleanly,
 ///   new daemons still understand v2 requests.
-pub const RPC_PROTOCOL_VERSION: u32 = 3;
+/// - v4: added `SetTags`, `Disconnect`, and `MoveBlock` request variants.
+pub const RPC_PROTOCOL_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", content = "params", rename_all = "snake_case")]
@@ -71,6 +72,11 @@ pub enum CairnRequest {
     ImportJson { json: String },
     ListSnapshots,
 
+    // New ops (v4)
+    SetTags(SetTagsParams),
+    Disconnect(DisconnectParams),
+    MoveBlock(MoveBlockParams),
+
     // Editor session control (v3)
     BeginEditorSession(BeginEditorSessionParams),
     EndEditorSession,
@@ -104,7 +110,10 @@ impl CairnRequest {
             | SetVoice { .. }
             | SetPreferences { .. }
             | Restore(_)
-            | ImportJson { .. } => true,
+            | ImportJson { .. }
+            | SetTags(_)
+            | Disconnect(_)
+            | MoveBlock(_) => true,
 
             // Reads: do not change graph state. `Snapshot` and `ExportJson`
             // produce files but never modify the live graph, so they're

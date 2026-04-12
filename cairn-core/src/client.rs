@@ -308,6 +308,20 @@ impl CairnClient {
         self.call(CairnRequest::ListSnapshots).await
     }
 
+    // ── New ops (v4) ──────────────────────────────────────────────
+
+    pub async fn set_tags(&self, params: SetTagsParams) -> Result<SetTagsResult> {
+        self.call(CairnRequest::SetTags(params)).await
+    }
+
+    pub async fn disconnect(&self, params: DisconnectParams) -> Result<DisconnectResult> {
+        self.call(CairnRequest::Disconnect(params)).await
+    }
+
+    pub async fn move_block(&self, params: MoveBlockParams) -> Result<MoveBlockResult> {
+        self.call(CairnRequest::MoveBlock(params)).await
+    }
+
     // ── Editor session control (v3) ──────────────────────────────
 
     /// Acquire the exclusive editor lock on the daemon. While this client

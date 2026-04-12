@@ -295,6 +295,29 @@ pub struct RenameParams {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct SetTagsParams {
+    pub topic_key: String,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DisconnectParams {
+    pub from_key: String,
+    pub to_key: String,
+    pub edge_type: EdgeKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MoveBlockParams {
+    pub topic_key: String,
+    pub block_id: String,
+    pub position: Position,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BeginEditorSessionParams {
     /// Optional human-readable label for what the user is doing in this
     /// session. Surfaced to other clients via `EditorSessionStatus` and in
@@ -462,6 +485,27 @@ pub struct RenameResult {
     pub old_key: String,
     pub new_key: String,
     pub title: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetTagsResult {
+    pub topic_key: String,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DisconnectResult {
+    pub edge: String,
+    pub from: String,
+    pub to: String,
+    pub action: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MoveBlockResult {
+    pub topic_key: String,
+    pub block_id: String,
+    pub new_position: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
