@@ -426,6 +426,7 @@ impl App {
     }
 }
 
+#[derive(Clone, Copy)]
 enum ListJump {
     First,
     Last,
@@ -448,6 +449,135 @@ enum Overlay {
         message: String,
         is_error: bool,
     },
+    /// Fuzzy-filtered command palette (`:` in browse mode). Lists all
+    /// available actions; the user types to narrow and Enter dispatches.
+    CommandPalette {
+        filter: String,
+        selected: usize,
+    },
+}
+
+/// Result of processing a key in an overlay context.
+enum OverlayResult {
+    /// The overlay consumed the key. The main event loop should `continue`.
+    Consumed,
+    /// The overlay produced an action to dispatch through the normal handler.
+    Dispatch(Action),
+}
+
+// ── Command palette commands ──────────────────────────────────────
+
+struct PaletteCommand {
+    name: &'static str,
+    description: &'static str,
+    key_hint: Option<&'static str>,
+    action: Action,
+    /// Only shown when edit_mode is true.
+    edit_only: bool,
+    /// Hidden when edit_mode is true (e.g. "Enter edit mode").
+    browse_only: bool,
+}
+
+fn all_palette_commands() -> Vec<PaletteCommand> {
+    vec![
+        PaletteCommand {
+            name: "Filter",
+            description: "Filter topics by name",
+            key_hint: Some("/"),
+            action: Action::EnterFilter,
+            edit_only: false,
+            browse_only: false,
+        },
+        PaletteCommand {
+            name: "Search",
+            description: "Full-text search across topics",
+            key_hint: Some("?"),
+            action: Action::EnterSearch,
+            edit_only: false,
+            browse_only: false,
+        },
+        PaletteCommand {
+            name: "Refresh",
+            description: "Re-fetch all data from daemon",
+            key_hint: Some("R"),
+            action: Action::Refresh,
+            edit_only: false,
+            browse_only: false,
+        },
+        PaletteCommand {
+            name: "Detail tab",
+            description: "Show topic detail",
+            key_hint: Some("1"),
+            action: Action::SwitchTab(DetailTab::Detail),
+            edit_only: false,
+            browse_only: false,
+        },
+        PaletteCommand {
+            name: "Neighbors tab",
+            description: "Show nearby topics",
+            key_hint: Some("2"),
+            action: Action::SwitchTab(DetailTab::Neighbors),
+            edit_only: false,
+            browse_only: false,
+        },
+        PaletteCommand {
+            name: "History tab",
+            description: "Show mutation history",
+            key_hint: Some("3"),
+            action: Action::SwitchTab(DetailTab::History),
+            edit_only: false,
+            browse_only: false,
+        },
+        PaletteCommand {
+            name: "Enter edit mode",
+            description: "Acquire exclusive lock for editing",
+            key_hint: Some("e"),
+            action: Action::RequestEditMode,
+            edit_only: false,
+            browse_only: true,
+        },
+        PaletteCommand {
+            name: "Exit edit mode",
+            description: "Release the editor lock",
+            key_hint: Some("Esc"),
+            action: Action::ExitEditMode,
+            edit_only: true,
+            browse_only: false,
+        },
+        PaletteCommand {
+            name: "Quit",
+            description: "Exit cairn-tui",
+            key_hint: Some("q"),
+            action: Action::Quit,
+            edit_only: false,
+            browse_only: false,
+        },
+    ]
+}
+
+fn filtered_palette(filter: &str, edit_mode: bool) -> Vec<(usize, &'static PaletteCommand)> {
+    use std::sync::OnceLock;
+    static COMMANDS: OnceLock<Vec<PaletteCommand>> = OnceLock::new();
+    let commands = COMMANDS.get_or_init(all_palette_commands);
+
+    let needle = filter.trim().to_lowercase();
+    commands
+        .iter()
+        .enumerate()
+        .filter(|(_, cmd)| {
+            if cmd.edit_only && !edit_mode {
+                return false;
+            }
+            if cmd.browse_only && edit_mode {
+                return false;
+            }
+            if needle.is_empty() {
+                return true;
+            }
+            cmd.name.to_lowercase().contains(&needle)
+                || cmd.description.to_lowercase().contains(&needle)
+        })
+        .collect()
 }
 
 // ── Event loop ────────────────────────────────────────────────────
@@ -477,56 +607,23 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
         }
 
         // ── Overlay dispatch ─────────────────────────────────────
-        // Overlays capture ALL key input. The match either handles
-        // the key and continues, or falls through to normal dispatch.
+        // Overlays capture ALL key input. If the overlay produces an
+        // action (e.g. the command palette), it falls through to the
+        // normal action handler below. Otherwise the key is consumed.
+        let mut dispatched_action = None;
         if app.overlay.is_some() {
-            let overlay = app.overlay.clone().unwrap();
-            match overlay {
-                Overlay::EditConfirm => match key.code {
-                    KeyCode::Enter => {
-                        app.overlay = None;
-                        match client.begin_editor_session(Some("TUI edit session")).await {
-                            Ok(()) => {
-                                app.edit_mode = true;
-                            }
-                            Err(CairnError::EditorBusy { reason, since }) => {
-                                let msg = format!(
-                                    "Editor lock is held by another client since {} (reason: {})",
-                                    since.format("%H:%M:%S"),
-                                    reason.as_deref().unwrap_or("none")
-                                );
-                                app.overlay = Some(Overlay::Notification {
-                                    message: msg,
-                                    is_error: true,
-                                });
-                            }
-                            Err(e) => {
-                                app.overlay = Some(Overlay::Notification {
-                                    message: format!("Failed to acquire editor lock: {e}"),
-                                    is_error: true,
-                                });
-                            }
-                        }
-                    }
-                    KeyCode::Esc => {
-                        app.overlay = None;
-                    }
-                    _ => {}
-                },
-                Overlay::Notification { .. } => {
-                    // Any keypress dismisses a notification.
-                    app.overlay = None;
-                }
+            match handle_overlay_key(app, client, key.code).await {
+                OverlayResult::Consumed => continue,
+                OverlayResult::Dispatch(a) => dispatched_action = Some(a),
             }
-            continue;
         }
 
         // ── Normal key dispatch ──────────────────────────────────
-        let action = match app.mode {
+        let action = dispatched_action.unwrap_or_else(|| match app.mode {
             Mode::Browse => handle_browse_key(key.code, key.modifiers, app.edit_mode),
             Mode::Filter => handle_text_key(key.code, TextTarget::Filter),
             Mode::Search => handle_text_key(key.code, TextTarget::Search),
-        };
+        });
 
         match action {
             Action::None => {}
@@ -642,10 +739,17 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
             Action::Refresh => {
                 app.refresh(client).await;
             }
+            Action::OpenPalette => {
+                app.overlay = Some(Overlay::CommandPalette {
+                    filter: String::new(),
+                    selected: 0,
+                });
+            }
         }
     }
 }
 
+#[derive(Clone, Copy)]
 enum Action {
     None,
     Quit,
@@ -666,6 +770,8 @@ enum Action {
     ExitEditMode,
     /// Re-fetch all data from the daemon.
     Refresh,
+    /// Open the command palette.
+    OpenPalette,
 }
 
 #[derive(Clone, Copy)]
@@ -694,6 +800,7 @@ fn handle_browse_key(code: KeyCode, mods: KeyModifiers, edit_mode: bool) -> Acti
         KeyCode::Char('h') if !mods.contains(KeyModifiers::CONTROL) => Action::PrevTab,
         KeyCode::Char('e') if !edit_mode => Action::RequestEditMode,
         KeyCode::Char('R') => Action::Refresh,
+        KeyCode::Char(':') => Action::OpenPalette,
         _ => Action::None,
     }
 }
@@ -705,6 +812,96 @@ fn handle_text_key(code: KeyCode, _target: TextTarget) -> Action {
         KeyCode::Backspace => Action::TextPop,
         KeyCode::Char(c) => Action::TextPush(c),
         _ => Action::None,
+    }
+}
+
+async fn handle_overlay_key(
+    app: &mut App,
+    client: &CairnClient,
+    code: KeyCode,
+) -> OverlayResult {
+    let overlay = app.overlay.clone().unwrap();
+    match overlay {
+        Overlay::EditConfirm => match code {
+            KeyCode::Enter => {
+                app.overlay = None;
+                match client.begin_editor_session(Some("TUI edit session")).await {
+                    Ok(()) => {
+                        app.edit_mode = true;
+                    }
+                    Err(CairnError::EditorBusy { reason, since }) => {
+                        let msg = format!(
+                            "Editor lock held by another client since {} (reason: {})",
+                            since.format("%H:%M:%S"),
+                            reason.as_deref().unwrap_or("none")
+                        );
+                        app.overlay = Some(Overlay::Notification {
+                            message: msg,
+                            is_error: true,
+                        });
+                    }
+                    Err(e) => {
+                        app.overlay = Some(Overlay::Notification {
+                            message: format!("Failed to acquire editor lock: {e}"),
+                            is_error: true,
+                        });
+                    }
+                }
+                OverlayResult::Consumed
+            }
+            KeyCode::Esc => {
+                app.overlay = None;
+                OverlayResult::Consumed
+            }
+            _ => OverlayResult::Consumed,
+        },
+        Overlay::Notification { .. } => {
+            app.overlay = None;
+            OverlayResult::Consumed
+        }
+        Overlay::CommandPalette { mut filter, mut selected } => match code {
+            KeyCode::Esc => {
+                app.overlay = None;
+                OverlayResult::Consumed
+            }
+            KeyCode::Enter => {
+                let matches = filtered_palette(&filter, app.edit_mode);
+                if let Some((_, cmd)) = matches.get(selected) {
+                    let action = cmd.action;
+                    app.overlay = None;
+                    OverlayResult::Dispatch(action)
+                } else {
+                    app.overlay = None;
+                    OverlayResult::Consumed
+                }
+            }
+            KeyCode::Char(c) => {
+                filter.push(c);
+                selected = 0;
+                app.overlay = Some(Overlay::CommandPalette { filter, selected });
+                OverlayResult::Consumed
+            }
+            KeyCode::Backspace => {
+                filter.pop();
+                selected = 0;
+                app.overlay = Some(Overlay::CommandPalette { filter, selected });
+                OverlayResult::Consumed
+            }
+            KeyCode::Down | KeyCode::Tab => {
+                let matches = filtered_palette(&filter, app.edit_mode);
+                if !matches.is_empty() {
+                    selected = (selected + 1).min(matches.len() - 1);
+                }
+                app.overlay = Some(Overlay::CommandPalette { filter, selected });
+                OverlayResult::Consumed
+            }
+            KeyCode::Up | KeyCode::BackTab => {
+                selected = selected.saturating_sub(1);
+                app.overlay = Some(Overlay::CommandPalette { filter, selected });
+                OverlayResult::Consumed
+            }
+            _ => OverlayResult::Consumed,
+        },
     }
 }
 
@@ -725,14 +922,16 @@ fn draw(f: &mut Frame, app: &App) {
     draw_footer(f, chunks[2], app);
 
     // Overlays render on top of everything else.
-    if let Some(overlay) = &app.overlay {
-        draw_overlay(f, overlay, f.area());
+    if app.overlay.is_some() {
+        draw_overlay(f, app, f.area());
     }
 }
 
 /// Render a modal overlay centered on the screen. Currently handles the
-/// edit-mode confirmation dialog (red, prominent) and notification toasts.
-fn draw_overlay(f: &mut Frame, overlay: &Overlay, area: Rect) {
+/// edit-mode confirmation dialog (red, prominent), notification toasts,
+/// and the command palette.
+fn draw_overlay(f: &mut Frame, app: &App, area: Rect) {
+    let overlay = app.overlay.as_ref().unwrap();
     match overlay {
         Overlay::EditConfirm => {
             let dialog_width = 54u16.min(area.width.saturating_sub(4));
@@ -791,6 +990,100 @@ fn draw_overlay(f: &mut Frame, overlay: &Overlay, area: Rect) {
                 .style(Style::default().bg(Color::DarkGray));
             let paragraph = Paragraph::new(lines).block(block);
             f.render_widget(paragraph, dialog_area);
+        }
+        Overlay::CommandPalette { filter, selected } => {
+            let matches = filtered_palette(filter, app.edit_mode);
+            let max_visible = 12usize;
+            let list_height = matches.len().min(max_visible) as u16;
+            // 3 = top border + filter line + bottom border
+            let dialog_height = (list_height + 3).min(area.height.saturating_sub(4));
+            let dialog_width = 60u16.min(area.width.saturating_sub(4));
+            let x = (area.width.saturating_sub(dialog_width)) / 2;
+            let y = (area.height.saturating_sub(dialog_height)) / 2;
+            let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
+
+            // Background
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan))
+                .title(" : command palette ")
+                .style(Style::default().bg(Color::Black));
+            f.render_widget(block, dialog_area);
+
+            // Inner area (inside borders)
+            let inner = Rect::new(
+                dialog_area.x + 1,
+                dialog_area.y + 1,
+                dialog_area.width.saturating_sub(2),
+                dialog_area.height.saturating_sub(2),
+            );
+
+            if inner.height == 0 || inner.width == 0 {
+                return;
+            }
+
+            // Filter input line
+            let filter_line = Line::from(vec![
+                Span::styled("> ", Style::default().fg(Color::Cyan)),
+                Span::styled(
+                    filter.clone(),
+                    Style::default().add_modifier(Modifier::UNDERLINED),
+                ),
+                Span::styled("_", Style::default().fg(Color::DarkGray)),
+            ]);
+            let filter_area = Rect::new(inner.x, inner.y, inner.width, 1);
+            f.render_widget(Paragraph::new(filter_line), filter_area);
+
+            // Command list
+            let list_area = Rect::new(
+                inner.x,
+                inner.y + 1,
+                inner.width,
+                inner.height.saturating_sub(1),
+            );
+
+            let items: Vec<ListItem> = matches
+                .iter()
+                .enumerate()
+                .take(list_area.height as usize)
+                .map(|(i, (_, cmd))| {
+                    let mut spans = vec![
+                        Span::styled(
+                            format!(" {:<20}", cmd.name),
+                            if i == *selected {
+                                Style::default()
+                                    .fg(Color::Black)
+                                    .bg(Color::Cyan)
+                                    .add_modifier(Modifier::BOLD)
+                            } else {
+                                Style::default().fg(Color::White)
+                            },
+                        ),
+                        Span::styled(
+                            cmd.description,
+                            if i == *selected {
+                                Style::default().fg(Color::Black).bg(Color::Cyan)
+                            } else {
+                                Style::default().fg(Color::DarkGray)
+                            },
+                        ),
+                    ];
+                    if let Some(hint) = cmd.key_hint {
+                        spans.push(Span::styled(
+                            format!("  {hint}"),
+                            if i == *selected {
+                                Style::default().fg(Color::Black).bg(Color::Cyan)
+                            } else {
+                                Style::default().fg(Color::Yellow)
+                            },
+                        ));
+                    }
+                    ListItem::new(Line::from(spans))
+                })
+                .collect();
+
+            let list = List::new(items).style(Style::default().bg(Color::Black));
+            f.render_widget(list, list_area);
         }
         Overlay::Notification { message, is_error } => {
             let color = if *is_error { Color::Red } else { Color::Green };
@@ -1174,6 +1467,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
         Mode::Browse if app.edit_mode => vec![
             key_hint("j/k", "move"),
             key_hint("h/l/tab", "tabs"),
+            key_hint(":", "commands"),
             key_hint("/", "filter"),
             key_hint("?", "search"),
             key_hint("R", "refresh"),
@@ -1183,7 +1477,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
         Mode::Browse => vec![
             key_hint("j/k", "move"),
             key_hint("h/l/tab", "tabs"),
-            key_hint("1/2/3", "detail/neigh/hist"),
+            key_hint(":", "commands"),
             key_hint("/", "filter"),
             key_hint("?", "search"),
             key_hint("e", "edit mode"),
