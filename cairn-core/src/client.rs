@@ -136,10 +136,7 @@ impl CairnClient {
         }
     }
 
-    async fn try_call<T: DeserializeOwned>(
-        &self,
-        line: &str,
-    ) -> std::result::Result<T, CallError> {
+    async fn try_call<T: DeserializeOwned>(&self, line: &str) -> std::result::Result<T, CallError> {
         let mut conn = self.inner.lock().await;
 
         conn.writer
@@ -171,8 +168,7 @@ impl CairnClient {
             return Err(CallError::Remote(reconstruct_error(resp)));
         }
         let value = resp.result.unwrap_or(serde_json::Value::Null);
-        serde_json::from_value(value)
-            .map_err(|e| CallError::Codec(format!("decode result: {e}")))
+        serde_json::from_value(value).map_err(|e| CallError::Codec(format!("decode result: {e}")))
     }
 
     // ── Mirrored Cairn API ───────────────────────────────────────

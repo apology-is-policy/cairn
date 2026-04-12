@@ -186,11 +186,7 @@ fn estimate_tokens(text: &str) -> usize {
 /// - **Stale areas**: matched topics not updated in 30+ days
 ///
 /// Returns formatted markdown sections, or empty string if nothing notable.
-async fn build_preflight(
-    db: &CairnDb,
-    matched_keys: &[String],
-    _task: &str,
-) -> Result<String> {
+async fn build_preflight(db: &CairnDb, matched_keys: &[String], _task: &str) -> Result<String> {
     use std::fmt::Write;
 
     // Get all edges within 2 hops of matched topics.
@@ -223,25 +219,23 @@ async fn build_preflight(
             let involves_matched =
                 matched_set.contains(e.from.as_str()) || matched_set.contains(e.to.as_str());
             if involves_matched {
-                gotchas.push(format!(
-                    "- {} → {} (gotcha): {}",
-                    e.from, e.to, e.note
-                ));
+                gotchas.push(format!("- {} → {} (gotcha): {}", e.from, e.to, e.note));
             }
         }
     }
     if !gotchas.is_empty() {
-        let _ = writeln!(sections, "### Constraints (gotchas)\n{}\n", gotchas.join("\n"));
+        let _ = writeln!(
+            sections,
+            "### Constraints (gotchas)\n{}\n",
+            gotchas.join("\n")
+        );
     }
 
     // ── Impact radius (reverse depends_on) ──
     let mut dependents: Vec<String> = Vec::new();
     for e in &hop1_edges {
         if e.edge_type == "depends_on" && matched_set.contains(e.to.as_str()) {
-            dependents.push(format!(
-                "- {} depends on {} — {}",
-                e.from, e.to, e.note
-            ));
+            dependents.push(format!("- {} depends on {} — {}", e.from, e.to, e.note));
         }
     }
     // Transitive dependents (2nd hop)
@@ -273,13 +267,10 @@ async fn build_preflight(
     let mut war_stories: Vec<String> = Vec::new();
     for e in hop1_edges.iter().chain(hop2_edges.iter()) {
         if e.edge_type == "war_story" {
-            let involves = matched_set.contains(e.from.as_str())
-                || matched_set.contains(e.to.as_str());
+            let involves =
+                matched_set.contains(e.from.as_str()) || matched_set.contains(e.to.as_str());
             if involves {
-                war_stories.push(format!(
-                    "- {} ↔ {} (war story): {}",
-                    e.from, e.to, e.note
-                ));
+                war_stories.push(format!("- {} ↔ {} (war story): {}", e.from, e.to, e.note));
             }
         }
     }
@@ -291,10 +282,7 @@ async fn build_preflight(
     let mut contradictions: Vec<String> = Vec::new();
     for e in &hop1_edges {
         if e.edge_type == "contradicts" {
-            contradictions.push(format!(
-                "- {} contradicts {} — {}",
-                e.from, e.to, e.note
-            ));
+            contradictions.push(format!("- {} contradicts {} — {}", e.from, e.to, e.note));
         }
     }
     if !contradictions.is_empty() {
@@ -468,8 +456,7 @@ pub async fn prime(db: &CairnDb, params: PrimeParams) -> Result<PrimeResult> {
     //    within 2 hops of matched topics. This turns the graph topology
     //    into active warnings the agent reads before starting work.
     if !matched_topics.is_empty() && token_count < max_tokens {
-        let preflight =
-            build_preflight(db, &matched_topics, &params.task).await?;
+        let preflight = build_preflight(db, &matched_topics, &params.task).await?;
         if !preflight.is_empty() {
             let section = format!("## Pre-flight for: \"{}\"\n\n{}\n", params.task, preflight);
             let section_tokens = estimate_tokens(&section);
@@ -505,11 +492,7 @@ pub async fn prime(db: &CairnDb, params: PrimeParams) -> Result<PrimeResult> {
         if let Some(topic) = crate::ops::get_topic_by_key(db, key).await? {
             let age = now.signed_duration_since(topic.updated_at);
             if age.num_days() > 30 {
-                stale_keys.push(format!(
-                    "{} ({}d old)",
-                    key,
-                    age.num_days()
-                ));
+                stale_keys.push(format!("{} ({}d old)", key, age.num_days()));
             }
         }
     }
@@ -523,10 +506,7 @@ pub async fn prime(db: &CairnDb, params: PrimeParams) -> Result<PrimeResult> {
     }
 
     if !notes.is_empty() && token_count < max_tokens {
-        let notes_section = format!(
-            "\n## ⚠ Notes for this task\n\n{}\n",
-            notes.join("\n\n")
-        );
+        let notes_section = format!("\n## ⚠ Notes for this task\n\n{}\n", notes.join("\n\n"));
         let _ = estimate_tokens(&notes_section); // token_count not read after this
         context_parts.push(notes_section);
     }
@@ -874,8 +854,20 @@ mod tests {
         let db = test_db().await;
         init_defaults(&db, Some("voice")).await.unwrap();
 
-        make_topic(&db, "api/rest-spec", "REST API specification", "All APIs use REST endpoints").await;
-        make_topic(&db, "api/grpc-spec", "gRPC API specification", "Some APIs use gRPC endpoints").await;
+        make_topic(
+            &db,
+            "api/rest-spec",
+            "REST API specification",
+            "All APIs use REST endpoints",
+        )
+        .await;
+        make_topic(
+            &db,
+            "api/grpc-spec",
+            "gRPC API specification",
+            "Some APIs use gRPC endpoints",
+        )
+        .await;
         make_edge(
             &db,
             "api/rest-spec",
@@ -934,14 +926,7 @@ mod tests {
 
         make_topic(&db, "alpha", "Alpha", "Alpha content here").await;
         make_topic(&db, "beta", "Beta", "Beta content here").await;
-        make_edge(
-            &db,
-            "alpha",
-            "beta",
-            EdgeKind::Gotcha,
-            "Watch out for beta",
-        )
-        .await;
+        make_edge(&db, "alpha", "beta", EdgeKind::Gotcha, "Watch out for beta").await;
 
         let result = prime(
             &db,

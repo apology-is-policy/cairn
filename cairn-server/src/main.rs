@@ -336,11 +336,7 @@ async fn write_response(w: &mut OwnedWriteHalf, resp: &CairnResponse) -> std::io
     w.flush().await
 }
 
-async fn dispatch(
-    state: &mut DaemonState,
-    conn_id: u64,
-    req: CairnRequest,
-) -> CairnResponse {
+async fn dispatch(state: &mut DaemonState, conn_id: u64, req: CairnRequest) -> CairnResponse {
     // Editor-lock gate: mutations from a connection that doesn't hold
     // the lock are rejected with EditorBusy carrying the holder's
     // since/reason. Reads always pass through. Editor-session control

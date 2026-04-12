@@ -305,8 +305,11 @@ impl App {
 
     fn reset_visible_to_all(&mut self) {
         self.visible = (0..self.all_topics.len()).collect();
-        self.list_state
-            .select(if self.visible.is_empty() { None } else { Some(0) });
+        self.list_state.select(if self.visible.is_empty() {
+            None
+        } else {
+            Some(0)
+        });
     }
 
     fn recompute_filter(&mut self) {
@@ -330,8 +333,11 @@ impl App {
             })
             .map(|(i, _)| i)
             .collect();
-        self.list_state
-            .select(if self.visible.is_empty() { None } else { Some(0) });
+        self.list_state.select(if self.visible.is_empty() {
+            None
+        } else {
+            Some(0)
+        });
     }
 
     /// Apply a server FTS result set to the visible list. Search results
@@ -344,8 +350,11 @@ impl App {
             .iter()
             .filter_map(|r| self.by_key.get(&r.topic_key).copied())
             .collect();
-        self.list_state
-            .select(if self.visible.is_empty() { None } else { Some(0) });
+        self.list_state.select(if self.visible.is_empty() {
+            None
+        } else {
+            Some(0)
+        });
     }
 
     /// Selection changed — drop the per-topic cache and re-fetch whatever
@@ -521,19 +530,11 @@ enum Overlay {
     /// If `pending_action` is set, that action is dispatched immediately
     /// after the lock is acquired — so pressing Enter on a block while
     /// not in edit mode flows directly into amend after confirming.
-    EditConfirm {
-        pending_action: Option<Action>,
-    },
+    EditConfirm { pending_action: Option<Action> },
     /// Notification toast — auto-dismissed on any keypress.
-    Notification {
-        message: String,
-        is_error: bool,
-    },
+    Notification { message: String, is_error: bool },
     /// Fuzzy-filtered command palette (`:` in browse mode).
-    CommandPalette {
-        filter: String,
-        selected: usize,
-    },
+    CommandPalette { filter: String, selected: usize },
     /// Multiline text editor (tui-textarea). Used for editing block
     /// content, voice, edge notes, etc.
     /// Esc enters command mode (`:w` save, `:q` cancel, `:wq` save+close).
@@ -591,21 +592,11 @@ enum Overlay {
 /// What the TextInput overlay should do with its content when saved.
 #[derive(Clone)]
 enum TextInputPurpose {
-    AmendBlock {
-        topic_key: String,
-        block_id: String,
-    },
+    AmendBlock { topic_key: String, block_id: String },
     EditVoice,
-    LearnContent {
-        topic_key: String,
-        title: String,
-    },
-    AddBlockContent {
-        topic_key: String,
-    },
-    EditSummary {
-        topic_key: String,
-    },
+    LearnContent { topic_key: String, title: String },
+    AddBlockContent { topic_key: String },
+    EditSummary { topic_key: String },
 }
 
 /// What the LineInput overlay should do with its content when confirmed.
@@ -1066,8 +1057,7 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                     let count = app.detail_elements().len();
                     if count > 0 {
                         let cur = app.detail_selected as isize;
-                        app.detail_selected =
-                            (cur + delta).rem_euclid(count as isize) as usize;
+                        app.detail_selected = (cur + delta).rem_euclid(count as isize) as usize;
                     }
                 }
             },
@@ -1139,8 +1129,7 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                     // Will re-dispatch after lock is acquired.
                 } else if let Some(detail) = &app.caches.detail {
                     let topic_key = detail.topic.key.clone();
-                    let mut textarea =
-                        tui_textarea::TextArea::new(vec![String::new()]);
+                    let mut textarea = tui_textarea::TextArea::new(vec![String::new()]);
                     textarea.set_cursor_line_style(Style::default());
                     textarea.set_style(Style::default().fg(Color::White));
                     app.overlay = Some(Overlay::TextInput {
@@ -1189,7 +1178,14 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                             .blocks
                             .iter()
                             .map(|b| {
-                                let preview = b.content.lines().next().unwrap_or("").chars().take(60).collect();
+                                let preview = b
+                                    .content
+                                    .lines()
+                                    .next()
+                                    .unwrap_or("")
+                                    .chars()
+                                    .take(60)
+                                    .collect();
                                 (b.id.clone(), preview)
                             })
                             .collect();
@@ -1214,10 +1210,7 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                 if items.is_empty() {
                     // No contextual actions — fall through silently.
                 } else {
-                    app.overlay = Some(Overlay::ContextMenu {
-                        items,
-                        selected: 0,
-                    });
+                    app.overlay = Some(Overlay::ContextMenu { items, selected: 0 });
                 }
             }
             Action::OpenPalette => {
@@ -1245,15 +1238,15 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
 
                     // Find the block to edit: preselected, or single-block
                     // shortcut, or picker for 2+.
-                    let target_block = preselected_block_id.and_then(|id| {
-                        detail.topic.blocks.iter().find(|b| b.id == id)
-                    }).or_else(|| {
-                        if detail.topic.blocks.len() == 1 {
-                            Some(&detail.topic.blocks[0])
-                        } else {
-                            None
-                        }
-                    });
+                    let target_block = preselected_block_id
+                        .and_then(|id| detail.topic.blocks.iter().find(|b| b.id == id))
+                        .or_else(|| {
+                            if detail.topic.blocks.len() == 1 {
+                                Some(&detail.topic.blocks[0])
+                            } else {
+                                None
+                            }
+                        });
 
                     if detail.topic.blocks.is_empty() {
                         app.overlay = Some(Overlay::Notification {
@@ -1268,10 +1261,7 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                         textarea.set_cursor_line_style(Style::default());
                         textarea.set_style(Style::default().fg(Color::White));
                         app.overlay = Some(Overlay::TextInput {
-                            title: format!(
-                                "Amend block {} in {}",
-                                block.id, topic_key
-                            ),
+                            title: format!("Amend block {} in {}", block.id, topic_key),
                             textarea: Box::new(textarea),
                             purpose: TextInputPurpose::AmendBlock {
                                 topic_key,
@@ -1349,9 +1339,7 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                 } else {
                     match client.get_voice().await {
                         Ok(voice_opt) => {
-                            let content = voice_opt
-                                .map(|v| v.content)
-                                .unwrap_or_default();
+                            let content = voice_opt.map(|v| v.content).unwrap_or_default();
                             let lines = soft_wrap(&content, 76);
                             let mut textarea = tui_textarea::TextArea::new(lines);
                             textarea.set_cursor_line_style(Style::default());
@@ -1380,10 +1368,7 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                 } else {
                     app.overlay = Some(Overlay::LineInput {
                         title: "Checkpoint session label".into(),
-                        buffer: format!(
-                            "tui_{}",
-                            chrono::Utc::now().format("%Y%m%d_%H%M%S")
-                        ),
+                        buffer: format!("tui_{}", chrono::Utc::now().format("%Y%m%d_%H%M%S")),
                         purpose: LineInputPurpose::CheckpointLabel,
                     });
                 }
@@ -1471,9 +1456,7 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                                 }
                                 Err(e) => notify_err(app, format!("Disconnect failed: {e}")),
                             },
-                            None => {
-                                notify_err(app, format!("Unknown edge type: {edge_type}"))
-                            }
+                            None => notify_err(app, format!("Unknown edge type: {edge_type}")),
                         }
                     } else if detail.explore.edges.is_empty() {
                         notify_err(app, "No edges to remove".into());
@@ -1491,10 +1474,7 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                                 )
                             })
                             .collect();
-                        app.overlay = Some(Overlay::EdgePicker {
-                            edges,
-                            selected: 0,
-                        });
+                        app.overlay = Some(Overlay::EdgePicker { edges, selected: 0 });
                     }
                 } else {
                     notify_err(app, "Select a topic first".into());
@@ -1547,17 +1527,11 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                             // a visible effect.
                             let (block_id, position) = if is_up {
                                 // Move block at index 1 to start
-                                (
-                                    blocks[1].id.clone(),
-                                    cairn_core::Position::Start,
-                                )
+                                (blocks[1].id.clone(), cairn_core::Position::Start)
                             } else {
                                 // Move block at index blocks.len()-2 to end
                                 let idx = blocks.len() - 2;
-                                (
-                                    blocks[idx].id.clone(),
-                                    cairn_core::Position::End,
-                                )
+                                (blocks[idx].id.clone(), cairn_core::Position::End)
                             };
                             match client
                                 .move_block(cairn_core::MoveBlockParams {
@@ -1713,7 +1687,10 @@ fn handle_text_key(code: KeyCode, _target: TextTarget) -> Action {
 /// Extract the Action values from the current context menu items,
 /// used to prioritize them in the command palette.
 fn context_action_set(app: &App) -> Vec<Action> {
-    build_context_menu(app).into_iter().map(|i| i.action).collect()
+    build_context_menu(app)
+        .into_iter()
+        .map(|i| i.action)
+        .collect()
 }
 
 /// Build context-menu items based on the currently focused pane and
@@ -1886,45 +1863,46 @@ async fn handle_overlay_key(
         } => {
             let context_actions = context_action_set(app);
             match key.code {
-            KeyCode::Esc => OverlayResult::Consumed,
-            KeyCode::Enter => {
-                let matches = filtered_palette(&filter, app.edit_mode, &context_actions);
-                if let Some((_, cmd)) = matches.get(selected) {
-                    OverlayResult::Dispatch(cmd.action)
-                } else {
+                KeyCode::Esc => OverlayResult::Consumed,
+                KeyCode::Enter => {
+                    let matches = filtered_palette(&filter, app.edit_mode, &context_actions);
+                    if let Some((_, cmd)) = matches.get(selected) {
+                        OverlayResult::Dispatch(cmd.action)
+                    } else {
+                        OverlayResult::Consumed
+                    }
+                }
+                KeyCode::Char(c) => {
+                    filter.push(c);
+                    selected = 0;
+                    app.overlay = Some(Overlay::CommandPalette { filter, selected });
+                    OverlayResult::Consumed
+                }
+                KeyCode::Backspace => {
+                    filter.pop();
+                    selected = 0;
+                    app.overlay = Some(Overlay::CommandPalette { filter, selected });
+                    OverlayResult::Consumed
+                }
+                KeyCode::Down | KeyCode::Tab => {
+                    let matches = filtered_palette(&filter, app.edit_mode, &context_actions);
+                    if !matches.is_empty() {
+                        selected = (selected + 1).min(matches.len() - 1);
+                    }
+                    app.overlay = Some(Overlay::CommandPalette { filter, selected });
+                    OverlayResult::Consumed
+                }
+                KeyCode::Up | KeyCode::BackTab => {
+                    selected = selected.saturating_sub(1);
+                    app.overlay = Some(Overlay::CommandPalette { filter, selected });
+                    OverlayResult::Consumed
+                }
+                _ => {
+                    app.overlay = Some(Overlay::CommandPalette { filter, selected });
                     OverlayResult::Consumed
                 }
             }
-            KeyCode::Char(c) => {
-                filter.push(c);
-                selected = 0;
-                app.overlay = Some(Overlay::CommandPalette { filter, selected });
-                OverlayResult::Consumed
-            }
-            KeyCode::Backspace => {
-                filter.pop();
-                selected = 0;
-                app.overlay = Some(Overlay::CommandPalette { filter, selected });
-                OverlayResult::Consumed
-            }
-            KeyCode::Down | KeyCode::Tab => {
-                let matches = filtered_palette(&filter, app.edit_mode, &context_actions);
-                if !matches.is_empty() {
-                    selected = (selected + 1).min(matches.len() - 1);
-                }
-                app.overlay = Some(Overlay::CommandPalette { filter, selected });
-                OverlayResult::Consumed
-            }
-            KeyCode::Up | KeyCode::BackTab => {
-                selected = selected.saturating_sub(1);
-                app.overlay = Some(Overlay::CommandPalette { filter, selected });
-                OverlayResult::Consumed
-            }
-            _ => {
-                app.overlay = Some(Overlay::CommandPalette { filter, selected });
-                OverlayResult::Consumed
-            }
-        }},
+        }
         Overlay::TextInput {
             textarea: mut textarea_box,
             title,
@@ -1957,27 +1935,45 @@ async fn handle_overlay_key(
                     KeyCode::Char(':') => stay!(EditorMode::Command(":".into())),
                     // Movement in normal mode — pass to textarea
                     KeyCode::Char('h') | KeyCode::Left => {
-                        textarea.input(crossterm::event::KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+                        textarea.input(crossterm::event::KeyEvent::new(
+                            KeyCode::Left,
+                            KeyModifiers::NONE,
+                        ));
                         stay!(EditorMode::Normal)
                     }
                     KeyCode::Char('j') | KeyCode::Down => {
-                        textarea.input(crossterm::event::KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+                        textarea.input(crossterm::event::KeyEvent::new(
+                            KeyCode::Down,
+                            KeyModifiers::NONE,
+                        ));
                         stay!(EditorMode::Normal)
                     }
                     KeyCode::Char('k') | KeyCode::Up => {
-                        textarea.input(crossterm::event::KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+                        textarea.input(crossterm::event::KeyEvent::new(
+                            KeyCode::Up,
+                            KeyModifiers::NONE,
+                        ));
                         stay!(EditorMode::Normal)
                     }
                     KeyCode::Char('l') | KeyCode::Right => {
-                        textarea.input(crossterm::event::KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+                        textarea.input(crossterm::event::KeyEvent::new(
+                            KeyCode::Right,
+                            KeyModifiers::NONE,
+                        ));
                         stay!(EditorMode::Normal)
                     }
                     KeyCode::Char('0') | KeyCode::Home => {
-                        textarea.input(crossterm::event::KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+                        textarea.input(crossterm::event::KeyEvent::new(
+                            KeyCode::Home,
+                            KeyModifiers::NONE,
+                        ));
                         stay!(EditorMode::Normal)
                     }
                     KeyCode::Char('$') | KeyCode::End => {
-                        textarea.input(crossterm::event::KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+                        textarea.input(crossterm::event::KeyEvent::new(
+                            KeyCode::End,
+                            KeyModifiers::NONE,
+                        ));
                         stay!(EditorMode::Normal)
                     }
                     KeyCode::Char('g') => {
@@ -2014,7 +2010,8 @@ async fn handle_overlay_key(
                             }
                             "w" => {
                                 let content = unwrap_soft(textarea.lines());
-                                let is_terminal = !matches!(purpose, TextInputPurpose::AmendBlock { .. });
+                                let is_terminal =
+                                    !matches!(purpose, TextInputPurpose::AmendBlock { .. });
                                 if is_terminal {
                                     let purpose_clone = purpose.clone();
                                     dispatch_text_save(app, client, purpose, content.clone()).await;
@@ -2102,12 +2099,18 @@ async fn handle_overlay_key(
                         new_content,
                     } => match client
                         .amend(cairn_core::AmendParams {
-                            topic_key, block_id, new_content, reason: value,
+                            topic_key,
+                            block_id,
+                            new_content,
+                            reason: value,
                         })
                         .await
                     {
                         Ok(r) => {
-                            notify_ok(app, format!("Amended block {} in '{}'", r.block_id, r.topic_key));
+                            notify_ok(
+                                app,
+                                format!("Amended block {} in '{}'", r.block_id, r.topic_key),
+                            );
                             app.caches = TopicCaches::default();
                             app.fetch_active_tab(client).await;
                         }
@@ -2128,7 +2131,8 @@ async fn handle_overlay_key(
                     },
                     LineInputPurpose::ForgetReason { topic_key } => match client
                         .forget(cairn_core::ForgetParams {
-                            topic_key, reason: value,
+                            topic_key,
+                            reason: value,
                         })
                         .await
                     {
@@ -2146,10 +2150,13 @@ async fn handle_overlay_key(
                         .await
                     {
                         Ok(r) => {
-                            notify_ok(app, format!(
-                                "Checkpoint '{}' ({} mutations)",
-                                r.session_id, r.mutations_persisted
-                            ));
+                            notify_ok(
+                                app,
+                                format!(
+                                    "Checkpoint '{}' ({} mutations)",
+                                    r.session_id, r.mutations_persisted
+                                ),
+                            );
                         }
                         Err(e) => notify_err(app, format!("Checkpoint failed: {e}")),
                     },
@@ -2158,15 +2165,12 @@ async fn handle_overlay_key(
                         app.overlay = Some(Overlay::LineInput {
                             title: format!("Title for '{}'", value),
                             buffer: String::new(),
-                            purpose: LineInputPurpose::NewTopicTitle {
-                                topic_key: value,
-                            },
+                            purpose: LineInputPurpose::NewTopicTitle { topic_key: value },
                         });
                     }
                     LineInputPurpose::NewTopicTitle { topic_key } => {
                         // Chain: title → content editor
-                        let mut textarea =
-                            tui_textarea::TextArea::new(vec![String::new()]);
+                        let mut textarea = tui_textarea::TextArea::new(vec![String::new()]);
                         textarea.set_cursor_line_style(Style::default());
                         textarea.set_style(Style::default().fg(Color::White));
                         app.overlay = Some(Overlay::TextInput {
@@ -2181,17 +2185,25 @@ async fn handle_overlay_key(
                             pending_save: false,
                         });
                     }
-                    LineInputPurpose::DeleteBlockReason { topic_key, block_id } => match client
+                    LineInputPurpose::DeleteBlockReason {
+                        topic_key,
+                        block_id,
+                    } => match client
                         .delete_block(cairn_core::DeleteBlockParams {
-                            topic_key, block_id, reason: value,
+                            topic_key,
+                            block_id,
+                            reason: value,
                         })
                         .await
                     {
                         Ok(r) => {
-                            notify_ok(app, format!(
-                                "Deleted block {} ({} remaining)",
-                                r.block_id, r.remaining_blocks
-                            ));
+                            notify_ok(
+                                app,
+                                format!(
+                                    "Deleted block {} ({} remaining)",
+                                    r.block_id, r.remaining_blocks
+                                ),
+                            );
                             app.caches = TopicCaches::default();
                             app.fetch_active_tab(client).await;
                         }
@@ -2199,7 +2211,8 @@ async fn handle_overlay_key(
                     },
                     LineInputPurpose::EditSummary { topic_key } => match client
                         .set_summary(cairn_core::SetSummaryParams {
-                            topic_key, summary: value,
+                            topic_key,
+                            summary: value,
                         })
                         .await
                     {
@@ -2252,10 +2265,10 @@ async fn handle_overlay_key(
                                 .await
                             {
                                 Ok(r) => {
-                                    notify_ok(app, format!(
-                                        "{} edge: {} → {}",
-                                        r.action, r.from, r.to
-                                    ));
+                                    notify_ok(
+                                        app,
+                                        format!("{} edge: {} → {}", r.action, r.from, r.to),
+                                    );
                                     app.caches = TopicCaches::default();
                                     app.fetch_active_tab(client).await;
                                 }
@@ -2331,33 +2344,53 @@ async fn handle_overlay_key(
                 KeyCode::Char(c) => {
                     filter.push(c);
                     selected = 0;
-                    app.overlay = Some(Overlay::TopicPicker { filter, selected, purpose });
+                    app.overlay = Some(Overlay::TopicPicker {
+                        filter,
+                        selected,
+                        purpose,
+                    });
                     OverlayResult::Consumed
                 }
                 KeyCode::Backspace => {
                     filter.pop();
                     selected = 0;
-                    app.overlay = Some(Overlay::TopicPicker { filter, selected, purpose });
+                    app.overlay = Some(Overlay::TopicPicker {
+                        filter,
+                        selected,
+                        purpose,
+                    });
                     OverlayResult::Consumed
                 }
                 KeyCode::Down | KeyCode::Tab => {
                     if !filtered.is_empty() {
                         selected = (selected + 1).min(filtered.len() - 1);
                     }
-                    app.overlay = Some(Overlay::TopicPicker { filter, selected, purpose });
+                    app.overlay = Some(Overlay::TopicPicker {
+                        filter,
+                        selected,
+                        purpose,
+                    });
                     OverlayResult::Consumed
                 }
                 KeyCode::Up | KeyCode::BackTab => {
                     selected = selected.saturating_sub(1);
-                    app.overlay = Some(Overlay::TopicPicker { filter, selected, purpose });
+                    app.overlay = Some(Overlay::TopicPicker {
+                        filter,
+                        selected,
+                        purpose,
+                    });
                     OverlayResult::Consumed
                 }
                 _ => {
-                    app.overlay = Some(Overlay::TopicPicker { filter, selected, purpose });
+                    app.overlay = Some(Overlay::TopicPicker {
+                        filter,
+                        selected,
+                        purpose,
+                    });
                     OverlayResult::Consumed
                 }
             }
-        },
+        }
         Overlay::ContextMenu {
             items,
             mut selected,
@@ -2459,20 +2492,26 @@ async fn handle_overlay_key(
             KeyCode::Down | KeyCode::Char('j') => {
                 selected = (selected + 1).min(EDGE_TYPES.len().saturating_sub(1));
                 app.overlay = Some(Overlay::EdgeTypePicker {
-                    from_key, to_key, selected,
+                    from_key,
+                    to_key,
+                    selected,
                 });
                 OverlayResult::Consumed
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 selected = selected.saturating_sub(1);
                 app.overlay = Some(Overlay::EdgeTypePicker {
-                    from_key, to_key, selected,
+                    from_key,
+                    to_key,
+                    selected,
                 });
                 OverlayResult::Consumed
             }
             _ => {
                 app.overlay = Some(Overlay::EdgeTypePicker {
-                    from_key, to_key, selected,
+                    from_key,
+                    to_key,
+                    selected,
                 });
                 OverlayResult::Consumed
             }
@@ -2487,11 +2526,7 @@ async fn handle_overlay_key(
                 if let Some((block_id, _)) = blocks.get(selected) {
                     // Fetch the full block content to prefill the editor.
                     if let Some(detail) = &app.caches.detail {
-                        if let Some(block) = detail
-                            .topic
-                            .blocks
-                            .iter()
-                            .find(|b| b.id == *block_id)
+                        if let Some(block) = detail.topic.blocks.iter().find(|b| b.id == *block_id)
                         {
                             let lines = soft_wrap(&block.content, 76);
                             let mut textarea = tui_textarea::TextArea::new(lines);
@@ -2663,7 +2698,10 @@ async fn dispatch_text_save(
     content: String,
 ) {
     match purpose {
-        TextInputPurpose::AmendBlock { topic_key, block_id } => {
+        TextInputPurpose::AmendBlock {
+            topic_key,
+            block_id,
+        } => {
             app.overlay = Some(Overlay::LineInput {
                 title: "Reason for amendment".into(),
                 buffer: String::new(),
@@ -2692,7 +2730,10 @@ async fn dispatch_text_save(
                 .await
             {
                 Ok(r) => {
-                    notify_ok(app, format!("Created topic '{}' (block {})", r.topic_key, r.block_id));
+                    notify_ok(
+                        app,
+                        format!("Created topic '{}' (block {})", r.topic_key, r.block_id),
+                    );
                     app.refresh(client).await;
                 }
                 Err(e) => notify_err(app, format!("Learn failed: {e}")),
@@ -2715,7 +2756,10 @@ async fn dispatch_text_save(
                     .await
                 {
                     Ok(r) => {
-                        notify_ok(app, format!("Added block {} to '{}'", r.block_id, r.topic_key));
+                        notify_ok(
+                            app,
+                            format!("Added block {} to '{}'", r.block_id, r.topic_key),
+                        );
                         app.caches = TopicCaches::default();
                         app.fetch_active_tab(client).await;
                     }
@@ -2725,7 +2769,10 @@ async fn dispatch_text_save(
         }
         TextInputPurpose::EditSummary { topic_key } => {
             match client
-                .set_summary(cairn_core::SetSummaryParams { topic_key, summary: content })
+                .set_summary(cairn_core::SetSummaryParams {
+                    topic_key,
+                    summary: content,
+                })
                 .await
             {
                 Ok(r) => {
@@ -2933,10 +2980,7 @@ fn draw_overlay(f: &mut Frame, app: &App, area: Rect) {
             let block = Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(mode_label.1))
-                .title(format!(
-                    " [{}] {} ",
-                    mode_label.0, title
-                ))
+                .title(format!(" [{}] {} ", mode_label.0, title))
                 .style(Style::default().bg(Color::Black));
             let inner = block.inner(editor_area);
             f.render_widget(block, editor_area);
@@ -2956,32 +3000,63 @@ fn draw_overlay(f: &mut Frame, app: &App, area: Rect) {
                     EditorMode::Normal => Line::from(vec![
                         Span::styled(
                             " NOR ",
-                            Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD),
+                            Style::default()
+                                .fg(Color::Black)
+                                .bg(Color::Cyan)
+                                .add_modifier(Modifier::BOLD),
                         ),
-                        Span::styled("  i", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                        Span::styled(
+                            "  i",
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ),
                         Span::styled(" insert  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled(":", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                        Span::styled(
+                            ":",
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ),
                         Span::styled(" command  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("hjkl", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                        Span::styled(
+                            "hjkl",
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ),
                         Span::styled(" move", Style::default().fg(Color::DarkGray)),
                     ]),
                     EditorMode::Insert => Line::from(vec![
                         Span::styled(
                             " INS ",
-                            Style::default().fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD),
+                            Style::default()
+                                .fg(Color::Black)
+                                .bg(Color::Green)
+                                .add_modifier(Modifier::BOLD),
                         ),
-                        Span::styled("  Esc", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                        Span::styled(
+                            "  Esc",
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ),
                         Span::styled(" normal mode", Style::default().fg(Color::DarkGray)),
                     ]),
                     EditorMode::Command(ref buf) => Line::from(vec![
                         Span::styled(
                             " CMD ",
-                            Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD),
+                            Style::default()
+                                .fg(Color::Black)
+                                .bg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
                         ),
                         Span::styled("  ", Style::default()),
                         Span::styled(
                             buf.clone(),
-                            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                            Style::default()
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD),
                         ),
                         Span::styled("_", Style::default().fg(Color::DarkGray)),
                         Span::styled(
@@ -2996,9 +3071,7 @@ fn draw_overlay(f: &mut Frame, app: &App, area: Rect) {
                 );
             }
         }
-        Overlay::LineInput {
-            title, buffer, ..
-        } => {
+        Overlay::LineInput { title, buffer, .. } => {
             let dialog_width = 60u16.min(area.width.saturating_sub(4));
             let dialog_height = 5u16;
             let x = (area.width.saturating_sub(dialog_width)) / 2;
@@ -3023,8 +3096,7 @@ fn draw_overlay(f: &mut Frame, app: &App, area: Rect) {
 
             // Hint
             if inner.height >= 2 {
-                let hint_area =
-                    Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1);
+                let hint_area = Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1);
                 let hints = Line::from(vec![
                     Span::styled(
                         "Enter",
@@ -3215,10 +3287,7 @@ fn draw_overlay(f: &mut Frame, app: &App, area: Rect) {
                     } else {
                         Style::default().fg(Color::White)
                     };
-                    ListItem::new(Line::from(Span::styled(
-                        format!(" {} ", item.label),
-                        style,
-                    )))
+                    ListItem::new(Line::from(Span::styled(format!(" {} ", item.label), style)))
                 })
                 .collect();
             let list = List::new(list_items).style(Style::default().bg(Color::Black));
@@ -3266,10 +3335,7 @@ fn draw_overlay(f: &mut Frame, app: &App, area: Rect) {
                         Span::styled(format!(" {from}"), style),
                         Span::styled(format!(" →[{etype}]→ "), desc_style),
                         Span::styled(format!("{to} "), style),
-                        Span::styled(
-                            note.chars().take(20).collect::<String>(),
-                            desc_style,
-                        ),
+                        Span::styled(note.chars().take(20).collect::<String>(), desc_style),
                     ]))
                 })
                 .collect();
@@ -3353,9 +3419,10 @@ fn draw_overlay(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     let s = &app.status.stats;
-    let mut spans = vec![
-        Span::styled("cairn", Style::default().add_modifier(Modifier::BOLD)),
-    ];
+    let mut spans = vec![Span::styled(
+        "cairn",
+        Style::default().add_modifier(Modifier::BOLD),
+    )];
     if app.edit_mode {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(
@@ -3368,10 +3435,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     }
     spans.extend([
         Span::raw("  "),
-        Span::styled(
-            &app.status.db_path,
-            Style::default().fg(Color::DarkGray),
-        ),
+        Span::styled(&app.status.db_path, Style::default().fg(Color::DarkGray)),
         Span::raw("  "),
         Span::raw(format!(
             "{} active / {} total ({} deprecated, {} stale)",
@@ -3518,10 +3582,7 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App) {
     let inner_height = block_widget.inner(area).height as usize;
     let total_lines = lines.len();
     let scroll_y = if !elem_starts.is_empty() && app.tab == DetailTab::Detail {
-        let elem_start = elem_starts
-            .get(app.detail_selected)
-            .copied()
-            .unwrap_or(0);
+        let elem_start = elem_starts.get(app.detail_selected).copied().unwrap_or(0);
         // Element end = next element's start, or total lines.
         let elem_end = elem_starts
             .get(app.detail_selected + 1)
@@ -3545,8 +3606,7 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App) {
 
     // Scrollbar (only when content overflows).
     if total_lines > inner_height {
-        let mut scrollbar_state = ScrollbarState::new(total_lines)
-            .position(scroll_y as usize);
+        let mut scrollbar_state = ScrollbarState::new(total_lines).position(scroll_y as usize);
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(None)
             .end_symbol(None);
@@ -3562,10 +3622,7 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn tab_title(app: &App) -> String {
-    let key = app
-        .selected_topic()
-        .map(|t| t.key.as_str())
-        .unwrap_or("—");
+    let key = app.selected_topic().map(|t| t.key.as_str()).unwrap_or("—");
     let mut s = String::from(" ");
     for (i, tab) in [DetailTab::Detail, DetailTab::Neighbors, DetailTab::History]
         .iter()
@@ -3602,25 +3659,27 @@ fn placeholder_lines(app: &App) -> Vec<Line<'static>> {
 
 /// Returns (lines, element_start_lines) — the rendered lines and the
 /// starting line number for each selectable DetailElement.
-fn detail_lines(
-    detail: &Detail,
-    selected_elem: Option<usize>,
-) -> (Vec<Line<'static>>, Vec<usize>) {
+fn detail_lines(detail: &Detail, selected_elem: Option<usize>) -> (Vec<Line<'static>>, Vec<usize>) {
     let t = &detail.topic;
     let mut lines: Vec<Line> = Vec::new();
     let mut elem_idx: usize = 0;
     let mut elem_starts: Vec<usize> = Vec::new();
 
     let sel_bg = Style::default().bg(Color::DarkGray);
-    let is_sel = |idx: usize| -> bool {
-        selected_elem.map(|s| s == idx).unwrap_or(false)
-    };
+    let is_sel = |idx: usize| -> bool { selected_elem.map(|s| s == idx).unwrap_or(false) };
 
     // ── Element 0: Title ──
     elem_starts.push(lines.len());
     let marker = if is_sel(elem_idx) { "▌ " } else { "  " };
     let mut header_spans = vec![
-        Span::styled(marker, if is_sel(elem_idx) { sel_bg } else { Style::default() }),
+        Span::styled(
+            marker,
+            if is_sel(elem_idx) {
+                sel_bg
+            } else {
+                Style::default()
+            },
+        ),
         Span::styled(
             t.title.clone(),
             Style::default().add_modifier(Modifier::BOLD),
@@ -3652,7 +3711,14 @@ fn detail_lines(
         elem_starts.push(lines.len());
         let marker = if is_sel(elem_idx) { "▌ " } else { "  " };
         lines.push(Line::from(vec![
-            Span::styled(marker, if is_sel(elem_idx) { sel_bg } else { Style::default() }),
+            Span::styled(
+                marker,
+                if is_sel(elem_idx) {
+                    sel_bg
+                } else {
+                    Style::default()
+                },
+            ),
             Span::styled(
                 format!("tags: {}", t.tags.join(", ")),
                 Style::default().fg(Color::DarkGray),
@@ -3667,7 +3733,14 @@ fn detail_lines(
         elem_starts.push(lines.len());
         let marker = if is_sel(elem_idx) { "▌ " } else { "  " };
         lines.push(Line::from(vec![
-            Span::styled(marker, if is_sel(elem_idx) { sel_bg } else { Style::default() }),
+            Span::styled(
+                marker,
+                if is_sel(elem_idx) {
+                    sel_bg
+                } else {
+                    Style::default()
+                },
+            ),
             Span::styled(
                 t.summary.clone(),
                 Style::default().add_modifier(Modifier::ITALIC),
@@ -3687,7 +3760,14 @@ fn detail_lines(
             Style::default().fg(Color::Yellow)
         };
         lines.push(Line::from(vec![
-            Span::styled(marker, if is_sel(elem_idx) { sel_bg } else { Style::default() }),
+            Span::styled(
+                marker,
+                if is_sel(elem_idx) {
+                    sel_bg
+                } else {
+                    Style::default()
+                },
+            ),
             Span::styled(format!("── block {} ", i + 1), header_style),
             Span::styled(
                 format!("[{}]", block.id),
@@ -3697,7 +3777,14 @@ fn detail_lines(
         for line in block.content.lines() {
             let prefix = if is_sel(elem_idx) { "▌ " } else { "  " };
             lines.push(Line::from(vec![
-                Span::styled(prefix, if is_sel(elem_idx) { sel_bg } else { Style::default() }),
+                Span::styled(
+                    prefix,
+                    if is_sel(elem_idx) {
+                        sel_bg
+                    } else {
+                        Style::default()
+                    },
+                ),
                 Span::raw(line.to_string()),
             ]));
         }
@@ -3718,7 +3805,11 @@ fn detail_lines(
             let base = edge_line(&t.key, edge);
             let mut spans = vec![Span::styled(
                 marker,
-                if is_sel(elem_idx) { sel_bg } else { Style::default() },
+                if is_sel(elem_idx) {
+                    sel_bg
+                } else {
+                    Style::default()
+                },
             )];
             spans.extend(base.spans);
             lines.push(Line::from(spans));
@@ -3732,7 +3823,10 @@ fn detail_lines(
 fn neighbor_lines(n: &NearbyResult) -> Vec<Line<'static>> {
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(Span::styled(
-        format!("center: {}  ·  {} nodes within 2 hops", n.center, n.total_nodes),
+        format!(
+            "center: {}  ·  {} nodes within 2 hops",
+            n.center, n.total_nodes
+        ),
         Style::default().fg(Color::DarkGray),
     )));
     lines.push(Line::from(""));
@@ -3746,7 +3840,8 @@ fn neighbor_lines(n: &NearbyResult) -> Vec<Line<'static>> {
     }
 
     // Stable order for the buckets so the view doesn't jiggle.
-    let mut buckets: Vec<(&String, &Vec<cairn_core::NearbyEntry>)> = n.by_edge_type.iter().collect();
+    let mut buckets: Vec<(&String, &Vec<cairn_core::NearbyEntry>)> =
+        n.by_edge_type.iter().collect();
     buckets.sort_by(|a, b| a.0.cmp(b.0));
 
     for (edge_type, entries) in buckets {
@@ -3762,10 +3857,7 @@ fn neighbor_lines(n: &NearbyResult) -> Vec<Line<'static>> {
                 ),
                 Span::styled(entry.key.clone(), Style::default().fg(Color::Cyan)),
                 Span::raw("  "),
-                Span::styled(
-                    entry.title.clone(),
-                    Style::default().fg(Color::DarkGray),
-                ),
+                Span::styled(entry.title.clone(), Style::default().fg(Color::DarkGray)),
             ]));
         }
         lines.push(Line::from(""));
@@ -3817,10 +3909,7 @@ fn edge_line(self_key: &str, edge: &EdgeSummary) -> Line<'static> {
         ("←", edge.from.clone())
     };
     Line::from(vec![
-        Span::styled(
-            format!("  {arrow} "),
-            Style::default().fg(Color::DarkGray),
-        ),
+        Span::styled(format!("  {arrow} "), Style::default().fg(Color::DarkGray)),
         Span::styled(
             format!("{:<12}", edge.edge_type),
             Style::default().fg(Color::Magenta),

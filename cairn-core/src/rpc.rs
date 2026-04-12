@@ -408,8 +408,10 @@ mod tests {
         .is_mutation());
         assert!(!CairnRequest::ExportJson.is_mutation());
         // Editor-session control is never a mutation — must always be reachable.
-        assert!(!CairnRequest::BeginEditorSession(BeginEditorSessionParams { reason: None })
-            .is_mutation());
+        assert!(
+            !CairnRequest::BeginEditorSession(BeginEditorSessionParams { reason: None })
+                .is_mutation()
+        );
         assert!(!CairnRequest::EndEditorSession.is_mutation());
         assert!(!CairnRequest::EditorSessionStatus.is_mutation());
     }
