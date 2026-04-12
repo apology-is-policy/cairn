@@ -227,6 +227,8 @@ struct App {
     focus: Focus,
     /// Selected element index in the right pane's detail view.
     detail_selected: usize,
+    /// Vertical scroll offset for the right pane (in lines).
+    detail_scroll: u16,
 
     // ── Edit mode ────────────────────────────────────────────────
     /// True while this client holds the daemon's editor-session lock.
@@ -264,6 +266,7 @@ impl App {
             caches: TopicCaches::default(),
             focus: Focus::Left,
             detail_selected: 0,
+            detail_scroll: 0,
             edit_mode: false,
             overlay: None,
         }
@@ -3331,29 +3334,41 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App) {
         None
     };
 
-    let lines = match app.tab {
+    let (lines, elem_starts) = match app.tab {
         DetailTab::Detail => match &app.caches.detail {
             Some(d) => detail_lines(d, sel),
-            None => placeholder_lines(app),
+            None => (placeholder_lines(app), vec![]),
         },
         DetailTab::Neighbors => match &app.caches.nearby {
-            Some(n) => neighbor_lines(n),
-            None => placeholder_lines(app),
+            Some(n) => (neighbor_lines(n), vec![]),
+            None => (placeholder_lines(app), vec![]),
         },
         DetailTab::History => match &app.caches.history {
-            Some(h) => history_lines(h),
-            None => placeholder_lines(app),
+            Some(h) => (history_lines(h), vec![]),
+            None => (placeholder_lines(app), vec![]),
         },
     };
 
+    // Compute scroll offset so the selected element stays visible.
+    let block_widget = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(border_style);
+    let inner_height = block_widget.inner(area).height as usize;
+    let scroll_y = if app.focus == Focus::Right && !elem_starts.is_empty() {
+        let target_line = elem_starts
+            .get(app.detail_selected)
+            .copied()
+            .unwrap_or(0);
+        scroll_offset(target_line, inner_height) as u16
+    } else {
+        app.detail_scroll
+    };
+
     let p = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(title)
-                .border_style(border_style),
-        )
-        .wrap(Wrap { trim: false });
+        .block(block_widget)
+        .wrap(Wrap { trim: false })
+        .scroll((scroll_y, 0));
     f.render_widget(p, area);
 }
 
@@ -3396,10 +3411,16 @@ fn placeholder_lines(app: &App) -> Vec<Line<'static>> {
     ))]
 }
 
-fn detail_lines(detail: &Detail, selected_elem: Option<usize>) -> Vec<Line<'static>> {
+/// Returns (lines, element_start_lines) — the rendered lines and the
+/// starting line number for each selectable DetailElement.
+fn detail_lines(
+    detail: &Detail,
+    selected_elem: Option<usize>,
+) -> (Vec<Line<'static>>, Vec<usize>) {
     let t = &detail.topic;
     let mut lines: Vec<Line> = Vec::new();
-    let mut elem_idx: usize = 0; // Tracks which DetailElement we're rendering.
+    let mut elem_idx: usize = 0;
+    let mut elem_starts: Vec<usize> = Vec::new();
 
     let sel_bg = Style::default().bg(Color::DarkGray);
     let is_sel = |idx: usize| -> bool {
@@ -3407,6 +3428,7 @@ fn detail_lines(detail: &Detail, selected_elem: Option<usize>) -> Vec<Line<'stat
     };
 
     // ── Element 0: Title ──
+    elem_starts.push(lines.len());
     let marker = if is_sel(elem_idx) { "▌ " } else { "  " };
     let mut header_spans = vec![
         Span::styled(marker, if is_sel(elem_idx) { sel_bg } else { Style::default() }),
@@ -3438,6 +3460,7 @@ fn detail_lines(detail: &Detail, selected_elem: Option<usize>) -> Vec<Line<'stat
 
     // ── Element: Tags (only if present) ──
     if !t.tags.is_empty() {
+        elem_starts.push(lines.len());
         let marker = if is_sel(elem_idx) { "▌ " } else { "  " };
         lines.push(Line::from(vec![
             Span::styled(marker, if is_sel(elem_idx) { sel_bg } else { Style::default() }),
@@ -3452,6 +3475,7 @@ fn detail_lines(detail: &Detail, selected_elem: Option<usize>) -> Vec<Line<'stat
 
     // ── Element: Summary ──
     if !t.summary.is_empty() {
+        elem_starts.push(lines.len());
         let marker = if is_sel(elem_idx) { "▌ " } else { "  " };
         lines.push(Line::from(vec![
             Span::styled(marker, if is_sel(elem_idx) { sel_bg } else { Style::default() }),
@@ -3466,6 +3490,7 @@ fn detail_lines(detail: &Detail, selected_elem: Option<usize>) -> Vec<Line<'stat
 
     // ── Elements: Blocks ──
     for (i, block) in t.blocks.iter().enumerate() {
+        elem_starts.push(lines.len());
         let marker = if is_sel(elem_idx) { "▌ " } else { "  " };
         let header_style = if is_sel(elem_idx) {
             Style::default().fg(Color::Yellow).bg(Color::DarkGray)
@@ -3493,11 +3518,13 @@ fn detail_lines(detail: &Detail, selected_elem: Option<usize>) -> Vec<Line<'stat
 
     // ── Elements: Edges ──
     if !detail.explore.edges.is_empty() {
+        // Edge section header (not a selectable element)
         lines.push(Line::from(Span::styled(
             "  ── edges ─────────────────────",
             Style::default().fg(Color::Yellow),
         )));
         for edge in &detail.explore.edges {
+            elem_starts.push(lines.len());
             let marker = if is_sel(elem_idx) { "▌ " } else { "  " };
             let base = edge_line(&t.key, edge);
             let mut spans = vec![Span::styled(
@@ -3510,7 +3537,7 @@ fn detail_lines(detail: &Detail, selected_elem: Option<usize>) -> Vec<Line<'stat
         }
     }
 
-    lines
+    (lines, elem_starts)
 }
 
 fn neighbor_lines(n: &NearbyResult) -> Vec<Line<'static>> {
