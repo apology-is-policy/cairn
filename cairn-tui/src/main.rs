@@ -25,7 +25,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 
 #[derive(Parser)]
@@ -956,8 +956,7 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                         1 => {
                             // Skip the picker — go straight to the editor.
                             let block = &detail.topic.blocks[0];
-                            let lines: Vec<String> =
-                                block.content.lines().map(String::from).collect();
+                            let lines = soft_wrap(&block.content, 76);
                             let mut textarea = tui_textarea::TextArea::new(lines);
                             textarea.set_cursor_line_style(Style::default());
                             textarea.set_style(Style::default().fg(Color::White));
@@ -1038,13 +1037,7 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                             let content = voice_opt
                                 .map(|v| v.content)
                                 .unwrap_or_default();
-                            let lines: Vec<String> =
-                                content.lines().map(String::from).collect();
-                            let lines = if lines.is_empty() {
-                                vec![String::new()]
-                            } else {
-                                lines
-                            };
+                            let lines = soft_wrap(&content, 76);
                             let mut textarea = tui_textarea::TextArea::new(lines);
                             textarea.set_cursor_line_style(Style::default());
                             textarea.set_style(Style::default().fg(Color::White));
@@ -1434,7 +1427,7 @@ async fn handle_overlay_key(
             if key.code == KeyCode::Char('s')
                 && key.modifiers.contains(KeyModifiers::CONTROL)
             {
-                let content = textarea.lines().join("\n");
+                let content = unwrap_soft(textarea.lines());
                 match purpose {
                     TextInputPurpose::AmendBlock {
                         topic_key,
@@ -1796,8 +1789,7 @@ async fn handle_overlay_key(
                             .iter()
                             .find(|b| b.id == *block_id)
                         {
-                            let lines: Vec<String> =
-                                block.content.lines().map(String::from).collect();
+                            let lines = soft_wrap(&block.content, 76);
                             let mut textarea = tui_textarea::TextArea::new(lines);
                             textarea.set_cursor_line_style(Style::default());
                             textarea.set_style(Style::default().fg(Color::White));
@@ -1868,6 +1860,67 @@ fn draw(f: &mut Frame, app: &App) {
     }
 }
 
+/// Word-wrap a string into lines that fit within `width` characters.
+/// Preserves existing line breaks. Empty lines (paragraph separators)
+/// are preserved as-is.
+fn soft_wrap(text: &str, width: usize) -> Vec<String> {
+    let mut result = Vec::new();
+    for line in text.lines() {
+        if line.is_empty() {
+            result.push(String::new());
+            continue;
+        }
+        let mut current = String::new();
+        for word in line.split_whitespace() {
+            if current.is_empty() {
+                current = word.to_string();
+            } else if current.len() + 1 + word.len() <= width {
+                current.push(' ');
+                current.push_str(word);
+            } else {
+                result.push(current);
+                current = word.to_string();
+            }
+        }
+        if !current.is_empty() {
+            result.push(current);
+        }
+    }
+    if result.is_empty() {
+        result.push(String::new());
+    }
+    result
+}
+
+/// Rejoin soft-wrapped lines back into the original paragraph structure.
+/// Lines are joined with a space unless followed by an empty line
+/// (paragraph separator) or the end of the text.
+fn unwrap_soft(lines: &[String]) -> String {
+    let mut result = String::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i].is_empty() {
+            if !result.is_empty() {
+                result.push('\n');
+            }
+            result.push('\n');
+            i += 1;
+            continue;
+        }
+        // Collect consecutive non-empty lines into one paragraph.
+        let start = i;
+        while i < lines.len() && !lines[i].is_empty() {
+            i += 1;
+        }
+        if !result.is_empty() && !result.ends_with('\n') {
+            result.push('\n');
+        }
+        let paragraph: Vec<&str> = lines[start..i].iter().map(|s| s.as_str()).collect();
+        result.push_str(&paragraph.join(" "));
+    }
+    result
+}
+
 fn notify_ok(app: &mut App, message: String) {
     app.overlay = Some(Overlay::Notification {
         message,
@@ -1893,9 +1946,7 @@ fn draw_overlay(f: &mut Frame, app: &App, area: Rect) {
             let y = (area.height.saturating_sub(dialog_height)) / 2;
             let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
 
-            // Clear the area under the dialog.
-            let clear = Block::default().style(Style::default().bg(Color::Black));
-            f.render_widget(clear, dialog_area);
+            f.render_widget(Clear, dialog_area);
 
             let lines = vec![
                 Line::from(""),
@@ -1954,6 +2005,7 @@ fn draw_overlay(f: &mut Frame, app: &App, area: Rect) {
             let x = (area.width.saturating_sub(dialog_width)) / 2;
             let y = (area.height.saturating_sub(dialog_height)) / 2;
             let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
+            f.render_widget(Clear, dialog_area);
 
             // Background
             let block = Block::default()
@@ -2049,6 +2101,7 @@ fn draw_overlay(f: &mut Frame, app: &App, area: Rect) {
             let w = area.width.saturating_sub(margin * 2);
             let h = area.height.saturating_sub(margin * 2);
             let editor_area = Rect::new(margin, margin, w, h);
+            f.render_widget(Clear, editor_area);
 
             let block = Block::default()
                 .borders(Borders::ALL)
@@ -2099,6 +2152,7 @@ fn draw_overlay(f: &mut Frame, app: &App, area: Rect) {
             let x = (area.width.saturating_sub(dialog_width)) / 2;
             let y = (area.height.saturating_sub(dialog_height)) / 2;
             let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
+            f.render_widget(Clear, dialog_area);
 
             let block = Block::default()
                 .borders(Borders::ALL)
@@ -2149,6 +2203,7 @@ fn draw_overlay(f: &mut Frame, app: &App, area: Rect) {
             let x = (area.width.saturating_sub(dialog_width)) / 2;
             let y = (area.height.saturating_sub(dialog_height)) / 2;
             let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
+            f.render_widget(Clear, dialog_area);
 
             let block = Block::default()
                 .borders(Borders::ALL)
@@ -2194,6 +2249,7 @@ fn draw_overlay(f: &mut Frame, app: &App, area: Rect) {
             let x = (area.width.saturating_sub(dialog_width)) / 2;
             let y = (area.height.saturating_sub(dialog_height)) / 2;
             let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
+            f.render_widget(Clear, dialog_area);
 
             let block = Block::default()
                 .borders(Borders::ALL)
@@ -2246,6 +2302,7 @@ fn draw_overlay(f: &mut Frame, app: &App, area: Rect) {
             let x = (area.width.saturating_sub(dialog_width)) / 2;
             let y = (area.height.saturating_sub(dialog_height)) / 2;
             let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
+            f.render_widget(Clear, dialog_area);
 
             let block = Block::default()
                 .borders(Borders::ALL)
@@ -2290,6 +2347,7 @@ fn draw_overlay(f: &mut Frame, app: &App, area: Rect) {
             let x = (area.width.saturating_sub(width)) / 2;
             let y = area.height.saturating_sub(4);
             let note_area = Rect::new(x, y, width, 3);
+            f.render_widget(Clear, note_area);
 
             let block = Block::default()
                 .borders(Borders::ALL)
