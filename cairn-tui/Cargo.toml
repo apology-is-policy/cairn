@@ -13,7 +13,8 @@ cairn-core = { path = "../cairn-core" }
 ratatui = "0.29"
 crossterm = { version = "0.28", features = ["event-stream"] }
 
-# Async runtime + CLI + logging share the workspace versions
+# Async runtime + CLI + logging + time share the workspace versions
+chrono = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true }
 tracing = { workspace = true }

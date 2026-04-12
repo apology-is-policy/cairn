@@ -478,6 +478,12 @@ enum Overlay {
         blocks: Vec<(String, String)>, // (block_id, first line preview)
         selected: usize,
     },
+    /// Edge type picker — select which edge type to create.
+    EdgeTypePicker {
+        from_key: String,
+        to_key: String,
+        selected: usize,
+    },
 }
 
 /// What the TextInput overlay should do with its content when saved.
@@ -485,6 +491,11 @@ enum TextInputPurpose {
     AmendBlock {
         topic_key: String,
         block_id: String,
+    },
+    EditVoice,
+    LearnContent {
+        topic_key: String,
+        title: String,
     },
 }
 
@@ -495,7 +506,37 @@ enum LineInputPurpose {
         block_id: String,
         new_content: String,
     },
+    RenameKey {
+        old_key: String,
+    },
+    ForgetReason {
+        topic_key: String,
+    },
+    CheckpointLabel,
+    NewTopicKey,
+    NewTopicTitle {
+        topic_key: String,
+    },
+    EdgeTargetKey {
+        from_key: String,
+    },
+    EdgeNote {
+        from_key: String,
+        to_key: String,
+        edge_type: String,
+    },
 }
+
+/// Edge types for the picker. Matches cairn_core::EdgeKind::ALL.
+const EDGE_TYPES: &[(&str, &str)] = &[
+    ("depends_on", "A requires B to function"),
+    ("gotcha", "B is a known pitfall when working with A"),
+    ("war_story", "B is an incident related to A"),
+    ("contradicts", "A and B contain conflicting information"),
+    ("replaced_by", "A is outdated; B is current"),
+    ("see_also", "Loose association"),
+    ("owns", "Ownership / responsibility"),
+];
 
 /// Result of processing a key in an overlay context.
 enum OverlayResult {
@@ -581,6 +622,54 @@ fn all_palette_commands() -> Vec<PaletteCommand> {
             description: "Edit a block's content in the selected topic",
             key_hint: Some("e"),
             action: Action::AmendBlock,
+            edit_only: true,
+            browse_only: false,
+        },
+        PaletteCommand {
+            name: "Rename topic",
+            description: "Change the key of the selected topic",
+            key_hint: Some("r"),
+            action: Action::RenameTopic,
+            edit_only: true,
+            browse_only: false,
+        },
+        PaletteCommand {
+            name: "Forget topic",
+            description: "Soft-delete the selected topic (deprecated)",
+            key_hint: Some("d"),
+            action: Action::ForgetTopic,
+            edit_only: true,
+            browse_only: false,
+        },
+        PaletteCommand {
+            name: "Edit voice",
+            description: "Edit the developer voice / personality",
+            key_hint: Some("V"),
+            action: Action::EditVoice,
+            edit_only: true,
+            browse_only: false,
+        },
+        PaletteCommand {
+            name: "Learn new topic",
+            description: "Create a brand new topic from scratch",
+            key_hint: Some("n"),
+            action: Action::LearnNewTopic,
+            edit_only: true,
+            browse_only: false,
+        },
+        PaletteCommand {
+            name: "Add edge",
+            description: "Create a typed edge from the selected topic",
+            key_hint: Some("a"),
+            action: Action::AddEdge,
+            edit_only: true,
+            browse_only: false,
+        },
+        PaletteCommand {
+            name: "Checkpoint",
+            description: "Create a manual checkpoint in the history",
+            key_hint: None,
+            action: Action::ManualCheckpoint,
             edit_only: true,
             browse_only: false,
         },
@@ -859,6 +948,131 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                     });
                 }
             }
+            Action::RenameTopic => {
+                if !app.edit_mode {
+                    app.overlay = Some(Overlay::Notification {
+                        message: "Enter edit mode first (press e)".into(),
+                        is_error: true,
+                    });
+                } else if let Some(key) = app.selected_key() {
+                    app.overlay = Some(Overlay::LineInput {
+                        title: format!("Rename '{}' → new key", key),
+                        buffer: key.clone(),
+                        purpose: LineInputPurpose::RenameKey { old_key: key },
+                    });
+                } else {
+                    app.overlay = Some(Overlay::Notification {
+                        message: "Select a topic first".into(),
+                        is_error: true,
+                    });
+                }
+            }
+            Action::ForgetTopic => {
+                if !app.edit_mode {
+                    app.overlay = Some(Overlay::Notification {
+                        message: "Enter edit mode first (press e)".into(),
+                        is_error: true,
+                    });
+                } else if let Some(key) = app.selected_key() {
+                    app.overlay = Some(Overlay::LineInput {
+                        title: format!("Forget '{}' — reason (required)", key),
+                        buffer: String::new(),
+                        purpose: LineInputPurpose::ForgetReason { topic_key: key },
+                    });
+                } else {
+                    app.overlay = Some(Overlay::Notification {
+                        message: "Select a topic first".into(),
+                        is_error: true,
+                    });
+                }
+            }
+            Action::EditVoice => {
+                if !app.edit_mode {
+                    app.overlay = Some(Overlay::Notification {
+                        message: "Enter edit mode first (press e)".into(),
+                        is_error: true,
+                    });
+                } else {
+                    match client.get_voice().await {
+                        Ok(voice_opt) => {
+                            let content = voice_opt
+                                .map(|v| v.content)
+                                .unwrap_or_default();
+                            let lines: Vec<String> =
+                                content.lines().map(String::from).collect();
+                            let lines = if lines.is_empty() {
+                                vec![String::new()]
+                            } else {
+                                lines
+                            };
+                            let mut textarea = tui_textarea::TextArea::new(lines);
+                            textarea.set_cursor_line_style(Style::default());
+                            textarea.set_style(Style::default().fg(Color::White));
+                            app.overlay = Some(Overlay::TextInput {
+                                title: "Edit developer voice".into(),
+                                textarea: Box::new(textarea),
+                                purpose: TextInputPurpose::EditVoice,
+                            });
+                        }
+                        Err(e) => {
+                            app.overlay = Some(Overlay::Notification {
+                                message: format!("Failed to load voice: {e}"),
+                                is_error: true,
+                            });
+                        }
+                    }
+                }
+            }
+            Action::ManualCheckpoint => {
+                if !app.edit_mode {
+                    app.overlay = Some(Overlay::Notification {
+                        message: "Enter edit mode first (press e)".into(),
+                        is_error: true,
+                    });
+                } else {
+                    app.overlay = Some(Overlay::LineInput {
+                        title: "Checkpoint session label".into(),
+                        buffer: format!(
+                            "tui_{}",
+                            chrono::Utc::now().format("%Y%m%d_%H%M%S")
+                        ),
+                        purpose: LineInputPurpose::CheckpointLabel,
+                    });
+                }
+            }
+            Action::LearnNewTopic => {
+                if !app.edit_mode {
+                    app.overlay = Some(Overlay::Notification {
+                        message: "Enter edit mode first (press e)".into(),
+                        is_error: true,
+                    });
+                } else {
+                    app.overlay = Some(Overlay::LineInput {
+                        title: "New topic key (e.g. payments/retry)".into(),
+                        buffer: String::new(),
+                        purpose: LineInputPurpose::NewTopicKey,
+                    });
+                }
+            }
+            Action::AddEdge => {
+                if !app.edit_mode {
+                    app.overlay = Some(Overlay::Notification {
+                        message: "Enter edit mode first (press e)".into(),
+                        is_error: true,
+                    });
+                } else if let Some(key) = app.selected_key() {
+                    app.overlay = Some(Overlay::LineInput {
+                        title: format!("Edge from '{}' → target topic key", key),
+                        buffer: String::new(),
+                        purpose: LineInputPurpose::EdgeTargetKey { from_key: key },
+                    });
+                } else {
+                    app.overlay = Some(Overlay::Notification {
+                        message: "Select a topic first".into(),
+                        is_error: true,
+                    });
+                }
+            }
         }
     }
 }
@@ -888,6 +1102,18 @@ enum Action {
     OpenPalette,
     /// Initiate the amend-block flow (block picker → editor → reason).
     AmendBlock,
+    /// Rename the selected topic.
+    RenameTopic,
+    /// Soft-delete the selected topic.
+    ForgetTopic,
+    /// Edit the developer voice in the multiline editor.
+    EditVoice,
+    /// Create a manual checkpoint with a session label.
+    ManualCheckpoint,
+    /// Learn a brand-new topic (key → title → content).
+    LearnNewTopic,
+    /// Create a typed edge from the selected topic.
+    AddEdge,
 }
 
 #[derive(Clone, Copy)]
@@ -915,6 +1141,11 @@ fn handle_browse_key(code: KeyCode, mods: KeyModifiers, edit_mode: bool) -> Acti
         KeyCode::Char('l') if !mods.contains(KeyModifiers::CONTROL) => Action::NextTab,
         KeyCode::Char('h') if !mods.contains(KeyModifiers::CONTROL) => Action::PrevTab,
         KeyCode::Char('e') if edit_mode => Action::AmendBlock,
+        KeyCode::Char('r') if edit_mode => Action::RenameTopic,
+        KeyCode::Char('d') if edit_mode => Action::ForgetTopic,
+        KeyCode::Char('V') if edit_mode => Action::EditVoice,
+        KeyCode::Char('n') if edit_mode => Action::LearnNewTopic,
+        KeyCode::Char('a') if edit_mode => Action::AddEdge,
         KeyCode::Char('e') => Action::RequestEditMode,
         KeyCode::Char('R') => Action::Refresh,
         KeyCode::Char(':') => Action::OpenPalette,
@@ -1027,7 +1258,7 @@ async fn handle_overlay_key(
                         topic_key,
                         block_id,
                     } => {
-                        // Open reason prompt.
+                        // Chain: content → reason prompt.
                         app.overlay = Some(Overlay::LineInput {
                             title: "Reason for amendment".into(),
                             buffer: String::new(),
@@ -1037,6 +1268,37 @@ async fn handle_overlay_key(
                                 new_content: content,
                             },
                         });
+                    }
+                    TextInputPurpose::EditVoice => {
+                        match client.set_voice(&content).await {
+                            Ok(_) => {
+                                notify_ok(app, "Voice updated".into());
+                            }
+                            Err(e) => notify_err(app, format!("Set voice failed: {e}")),
+                        }
+                    }
+                    TextInputPurpose::LearnContent { topic_key, title } => {
+                        match client
+                            .learn(cairn_core::LearnParams {
+                                topic_key: topic_key.clone(),
+                                title: Some(title),
+                                summary: None,
+                                content,
+                                voice: None,
+                                tags: vec![],
+                                position: cairn_core::Position::End,
+                            })
+                            .await
+                        {
+                            Ok(r) => {
+                                notify_ok(app, format!(
+                                    "Created topic '{}' (block {})",
+                                    r.topic_key, r.block_id
+                                ));
+                                app.refresh(client).await;
+                            }
+                            Err(e) => notify_err(app, format!("Learn failed: {e}")),
+                        }
                     }
                 }
                 OverlayResult::Consumed
@@ -1063,7 +1325,7 @@ async fn handle_overlay_key(
             KeyCode::Enter => {
                 let value = buffer.trim().to_string();
                 if value.is_empty() {
-                    // Reason is mandatory.
+                    // All inputs require non-empty text.
                     app.overlay = Some(Overlay::LineInput {
                         title,
                         buffer,
@@ -1076,34 +1338,120 @@ async fn handle_overlay_key(
                         topic_key,
                         block_id,
                         new_content,
+                    } => match client
+                        .amend(cairn_core::AmendParams {
+                            topic_key, block_id, new_content, reason: value,
+                        })
+                        .await
+                    {
+                        Ok(r) => {
+                            notify_ok(app, format!("Amended block {} in '{}'", r.block_id, r.topic_key));
+                            app.caches = TopicCaches::default();
+                            app.fetch_active_tab(client).await;
+                        }
+                        Err(e) => notify_err(app, format!("Amend failed: {e}")),
+                    },
+                    LineInputPurpose::RenameKey { old_key } => match client
+                        .rename(cairn_core::RenameParams {
+                            old_key: old_key.clone(),
+                            new_key: value.clone(),
+                        })
+                        .await
+                    {
+                        Ok(r) => {
+                            notify_ok(app, format!("Renamed '{}' → '{}'", r.old_key, r.new_key));
+                            app.refresh(client).await;
+                        }
+                        Err(e) => notify_err(app, format!("Rename failed: {e}")),
+                    },
+                    LineInputPurpose::ForgetReason { topic_key } => match client
+                        .forget(cairn_core::ForgetParams {
+                            topic_key, reason: value,
+                        })
+                        .await
+                    {
+                        Ok(r) => {
+                            notify_ok(app, format!("Forgot '{}': {}", r.topic_key, r.reason));
+                            app.refresh(client).await;
+                        }
+                        Err(e) => notify_err(app, format!("Forget failed: {e}")),
+                    },
+                    LineInputPurpose::CheckpointLabel => match client
+                        .checkpoint(cairn_core::CheckpointParams {
+                            session_id: value.clone(),
+                            emergency: false,
+                        })
+                        .await
+                    {
+                        Ok(r) => {
+                            notify_ok(app, format!(
+                                "Checkpoint '{}' ({} mutations)",
+                                r.session_id, r.mutations_persisted
+                            ));
+                        }
+                        Err(e) => notify_err(app, format!("Checkpoint failed: {e}")),
+                    },
+                    LineInputPurpose::NewTopicKey => {
+                        // Chain: key → title prompt
+                        app.overlay = Some(Overlay::LineInput {
+                            title: format!("Title for '{}'", value),
+                            buffer: String::new(),
+                            purpose: LineInputPurpose::NewTopicTitle {
+                                topic_key: value,
+                            },
+                        });
+                    }
+                    LineInputPurpose::NewTopicTitle { topic_key } => {
+                        // Chain: title → content editor
+                        let mut textarea =
+                            tui_textarea::TextArea::new(vec![String::new()]);
+                        textarea.set_cursor_line_style(Style::default());
+                        textarea.set_style(Style::default().fg(Color::White));
+                        app.overlay = Some(Overlay::TextInput {
+                            title: format!("Content for '{}'", topic_key),
+                            textarea: Box::new(textarea),
+                            purpose: TextInputPurpose::LearnContent {
+                                topic_key,
+                                title: value,
+                            },
+                        });
+                    }
+                    LineInputPurpose::EdgeTargetKey { from_key } => {
+                        // Chain: target key → edge type picker
+                        app.overlay = Some(Overlay::EdgeTypePicker {
+                            from_key,
+                            to_key: value,
+                            selected: 0,
+                        });
+                    }
+                    LineInputPurpose::EdgeNote {
+                        from_key,
+                        to_key,
+                        edge_type,
                     } => {
-                        match client
-                            .amend(cairn_core::AmendParams {
-                                topic_key: topic_key.clone(),
-                                block_id: block_id.clone(),
-                                new_content,
-                                reason: value,
-                            })
-                            .await
-                        {
-                            Ok(result) => {
-                                app.overlay = Some(Overlay::Notification {
-                                    message: format!(
-                                        "Amended block {} in '{}'",
-                                        result.block_id, result.topic_key
-                                    ),
-                                    is_error: false,
-                                });
-                                // Refresh the detail view.
-                                app.caches = TopicCaches::default();
-                                app.fetch_active_tab(client).await;
-                            }
-                            Err(e) => {
-                                app.overlay = Some(Overlay::Notification {
-                                    message: format!("Amend failed: {e}"),
-                                    is_error: true,
-                                });
-                            }
+                        let kind = cairn_core::EdgeKind::from_table_name(&edge_type);
+                        match kind {
+                            Some(kind) => match client
+                                .connect_topics(cairn_core::ConnectParams {
+                                    from_key: from_key.clone(),
+                                    to_key: to_key.clone(),
+                                    edge_type: kind,
+                                    note: value,
+                                    severity: None,
+                                })
+                                .await
+                            {
+                                Ok(r) => {
+                                    notify_ok(app, format!(
+                                        "{} edge: {} → {}",
+                                        r.action, r.from, r.to
+                                    ));
+                                    app.caches = TopicCaches::default();
+                                    app.fetch_active_tab(client).await;
+                                }
+                                Err(e) => notify_err(app, format!("Connect failed: {e}")),
+                            },
+                            None => notify_err(app, format!("Unknown edge type: {edge_type}")),
                         }
                     }
                 }
@@ -1132,6 +1480,47 @@ async fn handle_overlay_key(
                     title,
                     buffer,
                     purpose,
+                });
+                OverlayResult::Consumed
+            }
+        },
+        Overlay::EdgeTypePicker {
+            from_key,
+            to_key,
+            mut selected,
+        } => match key.code {
+            KeyCode::Esc => OverlayResult::Consumed,
+            KeyCode::Enter => {
+                if let Some((type_name, _)) = EDGE_TYPES.get(selected) {
+                    app.overlay = Some(Overlay::LineInput {
+                        title: format!("{} → {} [{}] — note", from_key, to_key, type_name),
+                        buffer: String::new(),
+                        purpose: LineInputPurpose::EdgeNote {
+                            from_key,
+                            to_key,
+                            edge_type: type_name.to_string(),
+                        },
+                    });
+                }
+                OverlayResult::Consumed
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                selected = (selected + 1).min(EDGE_TYPES.len().saturating_sub(1));
+                app.overlay = Some(Overlay::EdgeTypePicker {
+                    from_key, to_key, selected,
+                });
+                OverlayResult::Consumed
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                selected = selected.saturating_sub(1);
+                app.overlay = Some(Overlay::EdgeTypePicker {
+                    from_key, to_key, selected,
+                });
+                OverlayResult::Consumed
+            }
+            _ => {
+                app.overlay = Some(Overlay::EdgeTypePicker {
+                    from_key, to_key, selected,
                 });
                 OverlayResult::Consumed
             }
@@ -1224,9 +1613,21 @@ fn draw(f: &mut Frame, app: &App) {
     }
 }
 
-/// Render a modal overlay centered on the screen. Currently handles the
-/// edit-mode confirmation dialog (red, prominent), notification toasts,
-/// and the command palette.
+fn notify_ok(app: &mut App, message: String) {
+    app.overlay = Some(Overlay::Notification {
+        message,
+        is_error: false,
+    });
+}
+
+fn notify_err(app: &mut App, message: String) {
+    app.overlay = Some(Overlay::Notification {
+        message,
+        is_error: true,
+    });
+}
+
+/// Render a modal overlay centered on the screen.
 fn draw_overlay(f: &mut Frame, app: &App, area: Rect) {
     let overlay = app.overlay.as_ref().unwrap();
     match overlay {
@@ -1524,6 +1925,55 @@ fn draw_overlay(f: &mut Frame, app: &App, area: Rect) {
                                 preview.clone()
                             },
                             style,
+                        ),
+                    ]))
+                })
+                .collect();
+            let list = List::new(items).style(Style::default().bg(Color::Black));
+            f.render_widget(list, inner);
+        }
+        Overlay::EdgeTypePicker {
+            from_key,
+            to_key,
+            selected,
+        } => {
+            let list_height = EDGE_TYPES.len() as u16;
+            let dialog_height = (list_height + 2).min(area.height.saturating_sub(4));
+            let dialog_width = 60u16.min(area.width.saturating_sub(4));
+            let x = (area.width.saturating_sub(dialog_width)) / 2;
+            let y = (area.height.saturating_sub(dialog_height)) / 2;
+            let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
+
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Yellow))
+                .title(format!(" {} → {} — edge type ", from_key, to_key))
+                .style(Style::default().bg(Color::Black));
+            let inner = block.inner(dialog_area);
+            f.render_widget(block, dialog_area);
+
+            let items: Vec<ListItem> = EDGE_TYPES
+                .iter()
+                .enumerate()
+                .take(inner.height as usize)
+                .map(|(i, (name, desc))| {
+                    let style = if i == *selected {
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::White)
+                    };
+                    ListItem::new(Line::from(vec![
+                        Span::styled(format!(" {:<14}", name), style),
+                        Span::styled(
+                            *desc,
+                            if i == *selected {
+                                Style::default().fg(Color::Black).bg(Color::Yellow)
+                            } else {
+                                Style::default().fg(Color::DarkGray)
+                            },
                         ),
                     ]))
                 })
