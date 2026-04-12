@@ -5,7 +5,7 @@ const DEFAULT_PROTOCOL: &str = r#"You have an active Cairn knowledge graph for t
 ALWAYS:
 - Call `prime` at the start of every task, passing the task description.
 - Call `search` before making architectural recommendations, to check for
-  prior context or decisions.
+  prior context or decisions stored in the graph.
 
 CATALOGUE THE CODEBASE:
 As you work through code, create and maintain topics that describe the logical
@@ -24,6 +24,20 @@ the graph entry alone, without reading the code first? Aim for that.
 - Use hierarchical topic keys to reflect structure: "payments/retry",
   "payments/webhooks", "auth/oauth", "auth/sessions".
 
+CATALOGUE WHAT YOU CREATE:
+When you create or substantially modify a module, operation, or behavior,
+catalogue it immediately — don't defer to a future session.
+- Before creating a git commit that introduces new code, ensure the graph
+  reflects what you built. A 30-second `learn` call now saves a future agent
+  10 minutes of re-discovery.
+- Prioritize decisions and WHY over structure and WHAT. The code shows what
+  exists; the graph should explain why it exists that way and what the
+  alternatives were.
+- When you introduce a new operation, RPC variant, or core abstraction, that
+  is a topic or a block in an existing topic — not something to "get to later."
+- If you're unsure whether something deserves a topic, err on the side of
+  recording it. A small entry that exists beats a detailed entry that doesn't.
+
 RECORD INSIGHTS AND DISCOVERIES:
 - A hidden dependency between modules → `connect` with `depends_on`
 - A surprising behavior or bug → `learn` under the relevant topic
@@ -34,8 +48,8 @@ RECORD INSIGHTS AND DISCOVERIES:
 
 KEEP THE GRAPH FRESH:
 The graph is a cache of what was true when topics were last touched. Code
-moves faster than the graph, so when you actually work in an area, treat
-existing topics as a starting hypothesis and verify before relying on them.
+moves faster than the graph, so treat existing topics as a starting hypothesis
+and verify before relying on them.
 - When you start working substantively in an area covered by an existing
   topic, check the topic's freshness. Use `history <topic-key>` to see when
   the topic was last touched.
@@ -45,6 +59,8 @@ existing topics as a starting hypothesis and verify before relying on them.
   <relevant paths>` and skim the diffs for anything that contradicts the
   topic. Significant refactors, renamed entry points, changed dependencies,
   or removed gotchas all warrant an update.
+- When you *create or substantially modify* an area, create or update its
+  topic immediately. Don't wait for a future session to catalogue it.
 - When you find the code has diverged from what cairn says, ALWAYS `amend`
   the specific stale block rather than appending a new one. This preserves
   the audit trail (old content saved to history) and prevents topics from
@@ -54,6 +70,23 @@ existing topics as a starting hypothesis and verify before relying on them.
 - This freshness check is for substantive work — making changes, recommending
   architecture, debugging in the area. Don't do it for skim-reads or quick
   reference lookups; the cost isn't worth it for one-off questions.
+
+PERIODIC MAINTENANCE:
+In long sessions with many mutations (10+ learn/connect/amend calls), pause
+periodically to check whether the areas you're working in have up-to-date
+topics. If you've built something new and haven't catalogued it, do so before
+the context window compresses and you lose the understanding you have now.
+A good rhythm: after every major commit or logical milestone, take 30 seconds
+to ensure the graph reflects what just happened.
+
+SEARCH BEFORE RECOMMENDING:
+Before making architectural recommendations or proposing design changes, call
+`search` to check whether the graph contains prior context, decisions, or
+war stories about the area. This applies whether you're advising on existing
+code OR creating new architecture — the graph may contain constraints or
+decisions from prior sessions that should inform your current approach. If
+search returns nothing relevant, proceed with your recommendation but note
+the gap.
 
 DO NOT LOG:
 - Individual file imports, obvious type signatures, or boilerplate
