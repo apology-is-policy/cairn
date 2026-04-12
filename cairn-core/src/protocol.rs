@@ -1,4 +1,4 @@
-use crate::types::Preferences;
+use crate::types::{Preferences, TopicStats};
 
 const DEFAULT_PROTOCOL: &str = r#"You have an active Cairn knowledge graph for this workspace.
 
@@ -123,8 +123,13 @@ LEARNING MODE: VERBOSE
 - Be thorough in learned entries. Include context, reasoning, and opinion.
 - Multiple paragraphs are fine when the insight warrants it."#;
 
-/// Generate the behavioral contract from preferences.
-pub fn generate_protocol(prefs: &Preferences) -> String {
+/// Generate the behavioral contract from preferences and current graph state.
+///
+/// The protocol is mostly static, but the SITUATIONAL CONTEXT section at
+/// the end adapts based on the graph's health metrics. This is the
+/// mechanism that makes the contract responsive to the current state of
+/// the knowledge base rather than being one-size-fits-all.
+pub fn generate_protocol(prefs: &Preferences, stats: &TopicStats, has_voice: bool) -> String {
     let mut protocol = DEFAULT_PROTOCOL.to_string();
 
     if !prefs.learn_auto {
@@ -141,6 +146,48 @@ pub fn generate_protocol(prefs: &Preferences) -> String {
         protocol.push_str("\n\nNOTE: Gotchas are excluded from `prime` results by preference.");
     }
 
+    // ── Situational context ──────────────────────────────────────
+    // Adapt the contract based on graph health metrics.
+    let mut situational: Vec<&str> = Vec::new();
+
+    if stats.total < 5 {
+        situational.push(
+            "BOOTSTRAPPING: This graph is sparse (fewer than 5 topics). Be more \
+             aggressive about creating topics as you work — the first few sessions \
+             are the most valuable for building the map. Even rough entries are \
+             better than nothing; they give future agents a starting point.",
+        );
+    }
+
+    if stats.total > 0 {
+        let stale_pct = (stats.stale_90d as f64 / stats.total as f64) * 100.0;
+        if stale_pct > 30.0 {
+            situational.push(
+                "STALENESS WARNING: Over 30% of topics haven't been touched in 90+ \
+                 days. When you prime into an area, verify the returned topics \
+                 against the actual code before trusting them. Consider updating \
+                 the most relevant stale topics as you encounter them.",
+            );
+        }
+    }
+
+    if !has_voice {
+        situational.push(
+            "NO VOICE SET: The developer voice is empty. Consider asking the user \
+             to set one (`cairn-cli voice set \"...\"` or via the TUI). Without a \
+             voice, entries will be written in a generic tone that may not match \
+             the developer's style.",
+        );
+    }
+
+    if !situational.is_empty() {
+        protocol.push_str("\n\nSITUATIONAL CONTEXT:");
+        for note in situational {
+            protocol.push_str("\n- ");
+            protocol.push_str(note);
+        }
+    }
+
     protocol
 }
 
@@ -148,20 +195,33 @@ pub fn generate_protocol(prefs: &Preferences) -> String {
 mod tests {
     use super::*;
 
+    /// Healthy graph stats for tests that don't care about situational context.
+    fn healthy_stats() -> TopicStats {
+        TopicStats {
+            total: 20,
+            active: 18,
+            deprecated: 1,
+            stale_90d: 1,
+        }
+    }
+
     #[test]
     fn test_default_protocol() {
         let prefs = Preferences::default();
-        let protocol = generate_protocol(&prefs);
+        let protocol = generate_protocol(&prefs, &healthy_stats(), true);
         assert!(protocol.contains("ALWAYS:"));
         assert!(protocol.contains("WRITING STYLE:"));
+        assert!(protocol.contains("CATALOGUE WHAT YOU CREATE:"));
+        assert!(protocol.contains("PERIODIC MAINTENANCE:"));
         assert!(!protocol.contains("LEARNING MODE:"));
+        assert!(!protocol.contains("SITUATIONAL CONTEXT"));
     }
 
     #[test]
     fn test_learn_disabled() {
         let mut prefs = Preferences::default();
         prefs.learn_auto = false;
-        let protocol = generate_protocol(&prefs);
+        let protocol = generate_protocol(&prefs, &healthy_stats(), true);
         assert!(protocol.contains("LEARNING MODE: MANUAL"));
     }
 
@@ -169,7 +229,7 @@ mod tests {
     fn test_learn_terse() {
         let mut prefs = Preferences::default();
         prefs.learn_verbosity = "terse".into();
-        let protocol = generate_protocol(&prefs);
+        let protocol = generate_protocol(&prefs, &healthy_stats(), true);
         assert!(protocol.contains("LEARNING MODE: TERSE"));
     }
 
@@ -177,7 +237,47 @@ mod tests {
     fn test_gotchas_excluded() {
         let mut prefs = Preferences::default();
         prefs.prime_include_gotchas = false;
-        let protocol = generate_protocol(&prefs);
+        let protocol = generate_protocol(&prefs, &healthy_stats(), true);
         assert!(protocol.contains("Gotchas are excluded"));
+    }
+
+    #[test]
+    fn test_sparse_graph_bootstrapping() {
+        let prefs = Preferences::default();
+        let sparse = TopicStats {
+            total: 2,
+            active: 2,
+            deprecated: 0,
+            stale_90d: 0,
+        };
+        let protocol = generate_protocol(&prefs, &sparse, true);
+        assert!(protocol.contains("BOOTSTRAPPING"));
+    }
+
+    #[test]
+    fn test_stale_graph_warning() {
+        let prefs = Preferences::default();
+        let stale = TopicStats {
+            total: 10,
+            active: 7,
+            deprecated: 0,
+            stale_90d: 5, // 50% stale
+        };
+        let protocol = generate_protocol(&prefs, &stale, true);
+        assert!(protocol.contains("STALENESS WARNING"));
+    }
+
+    #[test]
+    fn test_no_voice_warning() {
+        let prefs = Preferences::default();
+        let protocol = generate_protocol(&prefs, &healthy_stats(), false);
+        assert!(protocol.contains("NO VOICE SET"));
+    }
+
+    #[test]
+    fn test_healthy_graph_no_situational() {
+        let prefs = Preferences::default();
+        let protocol = generate_protocol(&prefs, &healthy_stats(), true);
+        assert!(!protocol.contains("SITUATIONAL CONTEXT"));
     }
 }

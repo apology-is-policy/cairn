@@ -313,6 +313,50 @@ pub async fn prime(db: &CairnDb, params: PrimeParams) -> Result<PrimeResult> {
         }
     }
 
+    // 6. Situational notes based on what was (or wasn't) matched.
+    let mut notes: Vec<String> = Vec::new();
+
+    if matched_topics.is_empty() && !keywords.is_empty() {
+        notes.push(
+            "No existing topics matched your task. This is likely a new area — \
+             create a topic for it as you work so future sessions have context."
+                .into(),
+        );
+    }
+
+    // Check for stale matched topics.
+    let mut stale_keys: Vec<String> = Vec::new();
+    let now = chrono::Utc::now();
+    for key in &matched_topics {
+        if let Some(topic) = crate::ops::get_topic_by_key(db, key).await? {
+            let age = now.signed_duration_since(topic.updated_at);
+            if age.num_days() > 30 {
+                stale_keys.push(format!(
+                    "{} ({}d old)",
+                    key,
+                    age.num_days()
+                ));
+            }
+        }
+    }
+    if !stale_keys.is_empty() {
+        notes.push(format!(
+            "Stale topics in your context (>30 days since last update): {}. \
+             Verify these against the current code before relying on them, \
+             and amend any blocks that have drifted.",
+            stale_keys.join(", ")
+        ));
+    }
+
+    if !notes.is_empty() && token_count < max_tokens {
+        let notes_section = format!(
+            "\n## ⚠ Notes for this task\n\n{}\n",
+            notes.join("\n\n")
+        );
+        let _ = estimate_tokens(&notes_section); // token_count not read after this
+        context_parts.push(notes_section);
+    }
+
     let context = context_parts.join("\n");
     let token_estimate = estimate_tokens(&context);
 
@@ -328,8 +372,8 @@ pub async fn prime(db: &CairnDb, params: PrimeParams) -> Result<PrimeResult> {
 pub async fn graph_status(db: &CairnDb) -> Result<GraphStatusResult> {
     let stats = search::stats(db).await?;
     let prefs = get_preferences(db).await?;
-    let protocol = generate_protocol(&prefs);
     let voice = get_voice(db).await?;
+    let protocol = generate_protocol(&prefs, &stats.topics, voice.is_some());
 
     let active = stats.topics.total > 0 || voice.is_some();
 
