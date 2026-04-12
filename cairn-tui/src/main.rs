@@ -532,13 +532,18 @@ enum Overlay {
         selected: usize,
     },
     /// Multiline text editor (tui-textarea). Used for editing block
-    /// content, voice, edge notes, etc. Ctrl+S saves, Esc cancels.
+    /// content, voice, edge notes, etc.
+    /// Esc enters command mode (`:w` save, `:q` cancel, `:wq` save+close).
     /// The TextArea is boxed because it's much larger than the other
     /// variants (cursor state, undo history, line buffer).
     TextInput {
         title: String,
         textarea: Box<tui_textarea::TextArea<'static>>,
         purpose: TextInputPurpose,
+        /// When true, keys go to the command buffer instead of the textarea.
+        command_mode: bool,
+        /// The command being typed (e.g. "w", "wq").
+        command_buf: String,
     },
     /// Single-line text input for short prompts (reason, rename key).
     /// Enter confirms, Esc cancels.
@@ -558,6 +563,12 @@ enum Overlay {
     EdgePicker {
         edges: Vec<(String, String, String, String)>, // (from, to, edge_type, note)
         selected: usize,
+    },
+    /// Fuzzy-filtered topic picker for edge target selection.
+    TopicPicker {
+        filter: String,
+        selected: usize,
+        purpose: TopicPickerPurpose,
     },
     /// Context-sensitive action menu opened by Enter on a selected element.
     ContextMenu {
@@ -586,9 +597,13 @@ enum TextInputPurpose {
     AddBlockContent {
         topic_key: String,
     },
+    EditSummary {
+        topic_key: String,
+    },
 }
 
 /// What the LineInput overlay should do with its content when confirmed.
+#[allow(dead_code)]
 enum LineInputPurpose {
     AmendReason {
         topic_key: String,
@@ -606,9 +621,6 @@ enum LineInputPurpose {
     NewTopicTitle {
         topic_key: String,
     },
-    EdgeTargetKey {
-        from_key: String,
-    },
     EdgeNote {
         from_key: String,
         to_key: String,
@@ -620,6 +632,10 @@ enum LineInputPurpose {
     EditSummary {
         topic_key: String,
     },
+}
+
+enum TopicPickerPurpose {
+    EdgeTarget { from_key: String },
 }
 
 #[derive(Clone)]
@@ -1073,10 +1089,16 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                 } else if let Some(detail) = &app.caches.detail {
                     let topic_key = detail.topic.key.clone();
                     let current = detail.topic.summary.clone();
-                    app.overlay = Some(Overlay::LineInput {
+                    let lines = soft_wrap(&current, 76);
+                    let mut textarea = tui_textarea::TextArea::new(lines);
+                    textarea.set_cursor_line_style(Style::default());
+                    textarea.set_style(Style::default().fg(Color::White));
+                    app.overlay = Some(Overlay::TextInput {
                         title: format!("Summary for '{}'", topic_key),
-                        buffer: current,
-                        purpose: LineInputPurpose::EditSummary { topic_key },
+                        textarea: Box::new(textarea),
+                        purpose: TextInputPurpose::EditSummary { topic_key },
+                        command_mode: false,
+                        command_buf: String::new(),
                     });
                 } else {
                     notify_err(app, "Select a topic first".into());
@@ -1095,6 +1117,8 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                         title: format!("New block in '{}'", topic_key),
                         textarea: Box::new(textarea),
                         purpose: TextInputPurpose::AddBlockContent { topic_key },
+                        command_mode: false,
+                        command_buf: String::new(),
                     });
                 } else {
                     notify_err(app, "Select a topic first".into());
@@ -1174,6 +1198,8 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                                 topic_key,
                                 block_id: block.id.clone(),
                             },
+                            command_mode: false,
+                            command_buf: String::new(),
                         });
                     } else {
                         let blocks: Vec<(String, String)> = detail
@@ -1254,6 +1280,8 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                                 title: "Edit developer voice".into(),
                                 textarea: Box::new(textarea),
                                 purpose: TextInputPurpose::EditVoice,
+                                command_mode: false,
+                                command_buf: String::new(),
                             });
                         }
                         Err(e) => {
@@ -1294,16 +1322,13 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                 if require_edit_mode(app, action) {
                     // Will re-dispatch after lock is acquired.
                 } else if let Some(key) = app.selected_key() {
-                    app.overlay = Some(Overlay::LineInput {
-                        title: format!("Edge from '{}' → target topic key", key),
-                        buffer: String::new(),
-                        purpose: LineInputPurpose::EdgeTargetKey { from_key: key },
+                    app.overlay = Some(Overlay::TopicPicker {
+                        filter: String::new(),
+                        selected: 0,
+                        purpose: TopicPickerPurpose::EdgeTarget { from_key: key },
                     });
                 } else {
-                    app.overlay = Some(Overlay::Notification {
-                        message: "Select a topic first".into(),
-                        is_error: true,
-                    });
+                    notify_err(app, "Select a topic first".into());
                 }
             }
             Action::EditTags => {
@@ -1666,64 +1691,57 @@ fn build_context_menu(app: &App) -> Vec<ContextMenuItem> {
             }
         }
         Focus::Right => {
-            // Right pane: element-level actions based on selected element.
+            // Right pane: element-level actions. Shown even when not in
+            // edit mode — the action handlers use require_edit_mode() to
+            // prompt for the lock if needed, so pressing Enter on a block
+            // in view mode flows into the edit confirm dialog then amend.
             if let Some(elem) = app.selected_detail_element() {
                 match elem {
                     DetailElement::Title => {
-                        if app.edit_mode {
-                            items.push(ContextMenuItem {
-                                label: "Rename topic".into(),
-                                action: Action::RenameTopic,
-                            });
-                        }
+                        items.push(ContextMenuItem {
+                            label: "Rename topic".into(),
+                            action: Action::RenameTopic,
+                        });
                     }
                     DetailElement::Tags => {
-                        if app.edit_mode {
-                            items.push(ContextMenuItem {
-                                label: "Edit tags".into(),
-                                action: Action::EditTags,
-                            });
-                        }
+                        items.push(ContextMenuItem {
+                            label: "Edit tags".into(),
+                            action: Action::EditTags,
+                        });
                     }
                     DetailElement::Summary => {
-                        if app.edit_mode {
-                            items.push(ContextMenuItem {
-                                label: "Edit summary".into(),
-                                action: Action::EditSummary,
-                            });
-                        }
+                        items.push(ContextMenuItem {
+                            label: "Edit summary".into(),
+                            action: Action::EditSummary,
+                        });
                     }
                     DetailElement::Block { .. } => {
-                        if app.edit_mode {
-                            items.push(ContextMenuItem {
-                                label: "Amend this block".into(),
-                                action: Action::AmendBlock,
-                            });
-                            items.push(ContextMenuItem {
-                                label: "Add block".into(),
-                                action: Action::AddBlock,
-                            });
-                            items.push(ContextMenuItem {
-                                label: "Move block up".into(),
-                                action: Action::MoveBlockUp,
-                            });
-                            items.push(ContextMenuItem {
-                                label: "Move block down".into(),
-                                action: Action::MoveBlockDown,
-                            });
-                        }
+                        items.push(ContextMenuItem {
+                            label: "Amend this block".into(),
+                            action: Action::AmendBlock,
+                        });
+                        items.push(ContextMenuItem {
+                            label: "Add block".into(),
+                            action: Action::AddBlock,
+                        });
+                        items.push(ContextMenuItem {
+                            label: "Move block up".into(),
+                            action: Action::MoveBlockUp,
+                        });
+                        items.push(ContextMenuItem {
+                            label: "Move block down".into(),
+                            action: Action::MoveBlockDown,
+                        });
                     }
                     DetailElement::Edge { .. } => {
-                        if app.edit_mode {
-                            items.push(ContextMenuItem {
-                                label: "Remove this edge".into(),
-                                action: Action::RemoveEdge,
-                            });
-                            items.push(ContextMenuItem {
-                                label: "Add edge".into(),
-                                action: Action::AddEdge,
-                            });
-                        }
+                        items.push(ContextMenuItem {
+                            label: "Remove this edge".into(),
+                            action: Action::RemoveEdge,
+                        });
+                        items.push(ContextMenuItem {
+                            label: "Add edge".into(),
+                            action: Action::AddEdge,
+                        });
                     }
                 }
             }
@@ -1823,92 +1841,100 @@ async fn handle_overlay_key(
             textarea: mut textarea_box,
             title,
             purpose,
+            command_mode,
+            command_buf,
         } => {
             let textarea = &mut *textarea_box;
-            // Ctrl+S saves, Esc cancels. Everything else is passed to the textarea.
-            if key.code == KeyCode::Char('s')
-                && key.modifiers.contains(KeyModifiers::CONTROL)
-            {
-                let content = unwrap_soft(textarea.lines());
-                match purpose {
-                    TextInputPurpose::AmendBlock {
-                        topic_key,
-                        block_id,
-                    } => {
-                        // Chain: content → reason prompt.
-                        app.overlay = Some(Overlay::LineInput {
-                            title: "Reason for amendment".into(),
-                            buffer: String::new(),
-                            purpose: LineInputPurpose::AmendReason {
-                                topic_key,
-                                block_id,
-                                new_content: content,
-                            },
+            let mut command_mode = command_mode;
+            let mut command_buf = command_buf;
+
+            // ── Command mode (entered via Esc) ──
+            if command_mode {
+                match key.code {
+                    KeyCode::Esc => {
+                        // Cancel command mode, resume editing.
+                        app.overlay = Some(Overlay::TextInput {
+                            textarea: textarea_box,
+                            title,
+                            purpose,
+                            command_mode: false,
+                            command_buf: String::new(),
                         });
+                        OverlayResult::Consumed
                     }
-                    TextInputPurpose::EditVoice => {
-                        match client.set_voice(&content).await {
-                            Ok(_) => {
-                                notify_ok(app, "Voice updated".into());
+                    KeyCode::Enter => {
+                        let cmd = command_buf.trim().to_string();
+                        match cmd.as_str() {
+                            "w" | "wq" => {
+                                let content = unwrap_soft(textarea.lines());
+                                dispatch_text_save(app, client, purpose, content).await;
                             }
-                            Err(e) => notify_err(app, format!("Set voice failed: {e}")),
-                        }
-                    }
-                    TextInputPurpose::LearnContent { topic_key, title } => {
-                        match client
-                            .learn(cairn_core::LearnParams {
-                                topic_key: topic_key.clone(),
-                                title: Some(title),
-                                summary: None,
-                                content,
-                                voice: None,
-                                tags: vec![],
-                                position: cairn_core::Position::End,
-                            })
-                            .await
-                        {
-                            Ok(r) => {
-                                notify_ok(app, format!(
-                                    "Created topic '{}' (block {})",
-                                    r.topic_key, r.block_id
-                                ));
-                                app.refresh(client).await;
+                            "q" | "q!" => {
+                                // Discard and close.
                             }
-                            Err(e) => notify_err(app, format!("Learn failed: {e}")),
-                        }
-                    }
-                    TextInputPurpose::AddBlockContent { topic_key } => {
-                        if content.trim().is_empty() {
-                            notify_err(app, "Block content cannot be empty".into());
-                        } else {
-                            match client
-                                .learn(cairn_core::LearnParams {
-                                    topic_key: topic_key.clone(),
-                                    title: None,
-                                    summary: None,
-                                    content,
-                                    voice: None,
-                                    tags: vec![],
-                                    position: cairn_core::Position::End,
-                                })
-                                .await
-                            {
-                                Ok(r) => {
-                                    notify_ok(app, format!(
-                                        "Added block {} to '{}'",
-                                        r.block_id, r.topic_key
-                                    ));
-                                    app.caches = TopicCaches::default();
-                                    app.fetch_active_tab(client).await;
-                                }
-                                Err(e) => notify_err(app, format!("Add block failed: {e}")),
+                            _ => {
+                                // Unknown command — resume editing.
+                                command_mode = false;
+                                command_buf.clear();
+                                app.overlay = Some(Overlay::TextInput {
+                                    textarea: textarea_box,
+                                    title,
+                                    purpose,
+                                    command_mode,
+                                    command_buf,
+                                });
+                                return OverlayResult::Consumed;
                             }
                         }
+                        OverlayResult::Consumed
+                    }
+                    KeyCode::Char(c) => {
+                        command_buf.push(c);
+                        app.overlay = Some(Overlay::TextInput {
+                            textarea: textarea_box,
+                            title,
+                            purpose,
+                            command_mode,
+                            command_buf,
+                        });
+                        OverlayResult::Consumed
+                    }
+                    KeyCode::Backspace => {
+                        command_buf.pop();
+                        if command_buf.is_empty() {
+                            command_mode = false;
+                        }
+                        app.overlay = Some(Overlay::TextInput {
+                            textarea: textarea_box,
+                            title,
+                            purpose,
+                            command_mode,
+                            command_buf,
+                        });
+                        OverlayResult::Consumed
+                    }
+                    _ => {
+                        app.overlay = Some(Overlay::TextInput {
+                            textarea: textarea_box,
+                            title,
+                            purpose,
+                            command_mode,
+                            command_buf,
+                        });
+                        OverlayResult::Consumed
                     }
                 }
-                OverlayResult::Consumed
             } else if key.code == KeyCode::Esc {
-                // Cancel — discard edits.
+                // Enter command mode.
+                command_mode = true;
+                command_buf = ":".into();
+                app.overlay = Some(Overlay::TextInput {
+                    textarea: textarea_box,
+                    title,
+                    purpose,
+                    command_mode,
+                    command_buf,
+                });
                 OverlayResult::Consumed
             } else {
                 // Pass the key event to tui-textarea for editing.
@@ -1917,6 +1943,8 @@ async fn handle_overlay_key(
                     textarea: textarea_box,
                     title,
                     purpose,
+                    command_mode: false,
+                    command_buf: String::new(),
                 });
                 OverlayResult::Consumed
             }
@@ -2019,14 +2047,8 @@ async fn handle_overlay_key(
                                 topic_key,
                                 title: value,
                             },
-                        });
-                    }
-                    LineInputPurpose::EdgeTargetKey { from_key } => {
-                        // Chain: target key → edge type picker
-                        app.overlay = Some(Overlay::EdgeTypePicker {
-                            from_key,
-                            to_key: value,
-                            selected: 0,
+                            command_mode: false,
+                            command_buf: String::new(),
                         });
                     }
                     LineInputPurpose::EditSummary { topic_key } => match client
@@ -2124,6 +2146,70 @@ async fn handle_overlay_key(
                     purpose,
                 });
                 OverlayResult::Consumed
+            }
+        },
+        Overlay::TopicPicker {
+            mut filter,
+            mut selected,
+            purpose,
+        } => {
+            // Compute filtered topics.
+            let needle = filter.trim().to_lowercase();
+            let filtered: Vec<&NodeSummary> = app
+                .all_topics
+                .iter()
+                .filter(|t| {
+                    needle.is_empty()
+                        || t.key.to_lowercase().contains(&needle)
+                        || t.title.to_lowercase().contains(&needle)
+                })
+                .collect();
+
+            match key.code {
+                KeyCode::Esc => OverlayResult::Consumed,
+                KeyCode::Enter => {
+                    if let Some(topic) = filtered.get(selected) {
+                        let target_key = topic.key.clone();
+                        match purpose {
+                            TopicPickerPurpose::EdgeTarget { from_key } => {
+                                app.overlay = Some(Overlay::EdgeTypePicker {
+                                    from_key,
+                                    to_key: target_key,
+                                    selected: 0,
+                                });
+                            }
+                        }
+                    }
+                    OverlayResult::Consumed
+                }
+                KeyCode::Char(c) => {
+                    filter.push(c);
+                    selected = 0;
+                    app.overlay = Some(Overlay::TopicPicker { filter, selected, purpose });
+                    OverlayResult::Consumed
+                }
+                KeyCode::Backspace => {
+                    filter.pop();
+                    selected = 0;
+                    app.overlay = Some(Overlay::TopicPicker { filter, selected, purpose });
+                    OverlayResult::Consumed
+                }
+                KeyCode::Down | KeyCode::Tab => {
+                    if !filtered.is_empty() {
+                        selected = (selected + 1).min(filtered.len() - 1);
+                    }
+                    app.overlay = Some(Overlay::TopicPicker { filter, selected, purpose });
+                    OverlayResult::Consumed
+                }
+                KeyCode::Up | KeyCode::BackTab => {
+                    selected = selected.saturating_sub(1);
+                    app.overlay = Some(Overlay::TopicPicker { filter, selected, purpose });
+                    OverlayResult::Consumed
+                }
+                _ => {
+                    app.overlay = Some(Overlay::TopicPicker { filter, selected, purpose });
+                    OverlayResult::Consumed
+                }
             }
         },
         Overlay::ContextMenu {
@@ -2272,6 +2358,8 @@ async fn handle_overlay_key(
                                     topic_key,
                                     block_id: block_id.clone(),
                                 },
+                                command_mode: false,
+                                command_buf: String::new(),
                             });
                         }
                     }
@@ -2417,6 +2505,90 @@ fn require_edit_mode(app: &mut App, pending: Action) -> bool {
             pending_action: Some(pending),
         });
         true
+    }
+}
+
+/// Dispatch the save action for a TextInput overlay based on its purpose.
+async fn dispatch_text_save(
+    app: &mut App,
+    client: &CairnClient,
+    purpose: TextInputPurpose,
+    content: String,
+) {
+    match purpose {
+        TextInputPurpose::AmendBlock { topic_key, block_id } => {
+            app.overlay = Some(Overlay::LineInput {
+                title: "Reason for amendment".into(),
+                buffer: String::new(),
+                purpose: LineInputPurpose::AmendReason {
+                    topic_key,
+                    block_id,
+                    new_content: content,
+                },
+            });
+        }
+        TextInputPurpose::EditVoice => match client.set_voice(&content).await {
+            Ok(_) => notify_ok(app, "Voice updated".into()),
+            Err(e) => notify_err(app, format!("Set voice failed: {e}")),
+        },
+        TextInputPurpose::LearnContent { topic_key, title } => {
+            match client
+                .learn(cairn_core::LearnParams {
+                    topic_key: topic_key.clone(),
+                    title: Some(title),
+                    summary: None,
+                    content,
+                    voice: None,
+                    tags: vec![],
+                    position: cairn_core::Position::End,
+                })
+                .await
+            {
+                Ok(r) => {
+                    notify_ok(app, format!("Created topic '{}' (block {})", r.topic_key, r.block_id));
+                    app.refresh(client).await;
+                }
+                Err(e) => notify_err(app, format!("Learn failed: {e}")),
+            }
+        }
+        TextInputPurpose::AddBlockContent { topic_key } => {
+            if content.trim().is_empty() {
+                notify_err(app, "Block content cannot be empty".into());
+            } else {
+                match client
+                    .learn(cairn_core::LearnParams {
+                        topic_key: topic_key.clone(),
+                        title: None,
+                        summary: None,
+                        content,
+                        voice: None,
+                        tags: vec![],
+                        position: cairn_core::Position::End,
+                    })
+                    .await
+                {
+                    Ok(r) => {
+                        notify_ok(app, format!("Added block {} to '{}'", r.block_id, r.topic_key));
+                        app.caches = TopicCaches::default();
+                        app.fetch_active_tab(client).await;
+                    }
+                    Err(e) => notify_err(app, format!("Add block failed: {e}")),
+                }
+            }
+        }
+        TextInputPurpose::EditSummary { topic_key } => {
+            match client
+                .set_summary(cairn_core::SetSummaryParams { topic_key, summary: content })
+                .await
+            {
+                Ok(r) => {
+                    notify_ok(app, format!("Summary updated for '{}'", r.topic_key));
+                    app.caches = TopicCaches::default();
+                    app.fetch_active_tab(client).await;
+                }
+                Err(e) => notify_err(app, format!("Set summary failed: {e}")),
+            }
+        }
     }
 }
 
@@ -2595,6 +2767,8 @@ fn draw_overlay(f: &mut Frame, app: &App, area: Rect) {
         Overlay::TextInput {
             title,
             textarea: textarea_box,
+            command_mode,
+            command_buf,
             ..
         } => {
             let textarea = &**textarea_box;
@@ -2616,7 +2790,7 @@ fn draw_overlay(f: &mut Frame, app: &App, area: Rect) {
             // Render the textarea inside the block.
             f.render_widget(textarea, inner);
 
-            // Hint line at the bottom of the editor area.
+            // Hint line / command prompt at the bottom.
             if editor_area.height >= 3 {
                 let hint_area = Rect::new(
                     editor_area.x + 1,
@@ -2624,22 +2798,34 @@ fn draw_overlay(f: &mut Frame, app: &App, area: Rect) {
                     editor_area.width.saturating_sub(2),
                     1,
                 );
-                let hints = Line::from(vec![
-                    Span::styled(
-                        "Ctrl+S",
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(" save  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(
-                        "Esc",
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
-                ]);
+                let hints = if *command_mode {
+                    Line::from(vec![
+                        Span::styled(
+                            command_buf.clone(),
+                            Style::default()
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            "_ ",
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                        Span::styled(
+                            "  :w save  :q cancel  :wq save+close  Esc resume",
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                    ])
+                } else {
+                    Line::from(vec![
+                        Span::styled(
+                            "Esc",
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(" → :w save  :q cancel  :wq save+close", Style::default().fg(Color::DarkGray)),
+                    ])
+                };
                 f.render_widget(
                     Paragraph::new(hints).style(Style::default().bg(Color::Black)),
                     hint_area,
@@ -2746,6 +2932,91 @@ fn draw_overlay(f: &mut Frame, app: &App, area: Rect) {
                 .collect();
             let list = List::new(items).style(Style::default().bg(Color::Black));
             f.render_widget(list, inner);
+        }
+        Overlay::TopicPicker {
+            filter,
+            selected,
+            purpose: _,
+        } => {
+            let needle = filter.trim().to_lowercase();
+            let filtered: Vec<&NodeSummary> = app
+                .all_topics
+                .iter()
+                .filter(|t| {
+                    needle.is_empty()
+                        || t.key.to_lowercase().contains(&needle)
+                        || t.title.to_lowercase().contains(&needle)
+                })
+                .collect();
+
+            let max_visible = 14usize;
+            let list_height = filtered.len().min(max_visible) as u16;
+            let dialog_height = (list_height + 3).min(area.height.saturating_sub(4));
+            let dialog_width = 70u16.min(area.width.saturating_sub(4));
+            let x = (area.width.saturating_sub(dialog_width)) / 2;
+            let y = (area.height.saturating_sub(dialog_height)) / 2;
+            let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
+
+            f.render_widget(Clear, dialog_area);
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan))
+                .title(" Select target topic ")
+                .style(Style::default().bg(Color::Black));
+            let inner = block.inner(dialog_area);
+            f.render_widget(block, dialog_area);
+
+            if inner.height == 0 || inner.width == 0 {
+                return;
+            }
+
+            let filter_line = Line::from(vec![
+                Span::styled("> ", Style::default().fg(Color::Cyan)),
+                Span::styled(
+                    filter.clone(),
+                    Style::default().add_modifier(Modifier::UNDERLINED),
+                ),
+                Span::styled("_", Style::default().fg(Color::DarkGray)),
+            ]);
+            let filter_area = Rect::new(inner.x, inner.y, inner.width, 1);
+            f.render_widget(Paragraph::new(filter_line), filter_area);
+
+            let list_area = Rect::new(
+                inner.x,
+                inner.y + 1,
+                inner.width,
+                inner.height.saturating_sub(1),
+            );
+
+            let vh = list_area.height as usize;
+            let scroll = scroll_offset(*selected, vh);
+            let items: Vec<ListItem> = filtered
+                .iter()
+                .enumerate()
+                .skip(scroll)
+                .take(vh)
+                .map(|(i, t)| {
+                    let style = if i == *selected {
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::White)
+                    };
+                    let desc_style = if i == *selected {
+                        Style::default().fg(Color::Black).bg(Color::Cyan)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    };
+                    ListItem::new(Line::from(vec![
+                        Span::styled(format!(" {:<30}", t.key), style),
+                        Span::styled(&t.title, desc_style),
+                    ]))
+                })
+                .collect();
+            let list = List::new(items).style(Style::default().bg(Color::Black));
+            f.render_widget(list, list_area);
         }
         Overlay::ContextMenu { items, selected } => {
             let list_height = items.len().min(12) as u16;
