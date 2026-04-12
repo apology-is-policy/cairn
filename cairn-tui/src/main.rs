@@ -549,6 +549,10 @@ enum Overlay {
         command_buf: String,
         /// Original content for dirty-checking (`:q` warns if modified).
         original: String,
+        /// True if `:w` was used on a non-terminal purpose (amend).
+        /// When set, `:q` will chain to the save flow (reason prompt)
+        /// instead of silently closing.
+        pending_save: bool,
     },
     /// Single-line text input for short prompts (reason, rename key).
     /// Enter confirms, Esc cancels.
@@ -1118,6 +1122,7 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                         command_mode: false,
                         command_buf: String::new(),
                         original: current,
+                        pending_save: false,
                     });
                 } else {
                     notify_err(app, "Select a topic first".into());
@@ -1139,6 +1144,7 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                         command_mode: false,
                         command_buf: String::new(),
                         original: String::new(),
+                        pending_save: false,
                     });
                 } else {
                     notify_err(app, "Select a topic first".into());
@@ -1269,6 +1275,7 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                             command_mode: false,
                             command_buf: String::new(),
                             original: block.content.clone(),
+                            pending_save: false,
                         });
                     } else {
                         let blocks: Vec<(String, String)> = detail
@@ -1352,6 +1359,7 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                                 command_mode: false,
                                 command_buf: String::new(),
                                 original: content,
+                                pending_save: false,
                             });
                         }
                         Err(e) => {
@@ -1921,6 +1929,7 @@ async fn handle_overlay_key(
             command_mode,
             command_buf,
             original,
+            pending_save,
         } => {
             let textarea = &mut *textarea_box;
             let mut command_mode = command_mode;
@@ -1938,6 +1947,7 @@ async fn handle_overlay_key(
                             command_mode: false,
                             command_buf: String::new(),
                             original,
+                            pending_save: false,
                         });
                         OverlayResult::Consumed
                     }
@@ -1972,6 +1982,7 @@ async fn handle_overlay_key(
                                         command_mode: false,
                                         command_buf: String::new(),
                                         original: content,
+                                        pending_save: false,
                                     });
                                 } else {
                                     // Amend: keep editing, update baseline so
@@ -1983,15 +1994,22 @@ async fn handle_overlay_key(
                                         command_mode: false,
                                         command_buf: String::new(),
                                         original: content,
+                                        pending_save: true,
                                     });
                                 }
                             }
                             "q" => {
                                 let current = unwrap_soft(textarea.lines());
+                                if pending_save {
+                                    // User did :w earlier on an amend editor.
+                                    // :q now completes the save by chaining to
+                                    // the reason prompt (same as :wq).
+                                    dispatch_text_save(app, client, purpose, current).await;
+                                    return OverlayResult::Consumed;
+                                }
                                 if current != original {
-                                    // Unsaved changes — keep editor open, show
-                                    // a notification. The notification dismisses
-                                    // on any key, revealing the editor again.
+                                    // Unsaved changes — stay in editor silently
+                                    // (vim behavior: :q fails when dirty).
                                     app.overlay = Some(Overlay::TextInput {
                                         textarea: textarea_box,
                                         title,
@@ -1999,17 +2017,11 @@ async fn handle_overlay_key(
                                         command_mode: false,
                                         command_buf: String::new(),
                                         original,
+                                        pending_save: false,
                                     });
-                                    // Overwrite with notification — it'll dismiss
-                                    // on next key and the TextInput is gone. Hmm.
-                                    // Actually, we can't layer two overlays.
-                                    // Just resume editing with command mode off.
-                                    // The user sees nothing changed and tries :q! next.
-                                    // That's the vim behavior — :q just fails silently
-                                    // when there are unsaved changes.
                                     return OverlayResult::Consumed;
                                 }
-                                // No changes — close silently.
+                                // No changes, no pending save — close silently.
                             }
                             "q!" => {
                                 notify_ok(app, "Editor closed (changes discarded)".into());
@@ -2023,6 +2035,7 @@ async fn handle_overlay_key(
                                     command_mode: true,
                                     command_buf: format!("unknown: {cmd}"),
                                     original,
+                                    pending_save: false,
                                 });
                                 return OverlayResult::Consumed;
                             }
@@ -2038,6 +2051,7 @@ async fn handle_overlay_key(
                             command_mode,
                             command_buf,
                             original,
+                            pending_save: false,
                         });
                         OverlayResult::Consumed
                     }
@@ -2053,6 +2067,7 @@ async fn handle_overlay_key(
                             command_mode,
                             command_buf,
                             original,
+                            pending_save: false,
                         });
                         OverlayResult::Consumed
                     }
@@ -2064,6 +2079,7 @@ async fn handle_overlay_key(
                             command_mode,
                             command_buf,
                             original,
+                            pending_save: false,
                         });
                         OverlayResult::Consumed
                     }
@@ -2077,6 +2093,7 @@ async fn handle_overlay_key(
                     command_mode: true,
                     command_buf: String::new(),
                     original,
+                    pending_save: false,
                 });
                 OverlayResult::Consumed
             } else {
@@ -2089,6 +2106,7 @@ async fn handle_overlay_key(
                     command_mode: false,
                     command_buf: String::new(),
                     original,
+                    pending_save: false,
                 });
                 OverlayResult::Consumed
             }
@@ -2194,6 +2212,7 @@ async fn handle_overlay_key(
                             command_mode: false,
                             command_buf: String::new(),
                             original: String::new(),
+                            pending_save: false,
                         });
                     }
                     LineInputPurpose::DeleteBlockReason { topic_key, block_id } => match client
@@ -2522,6 +2541,7 @@ async fn handle_overlay_key(
                                 command_mode: false,
                                 command_buf: String::new(),
                                 original: block.content.clone(),
+                                pending_save: false,
                             });
                         }
                     }
