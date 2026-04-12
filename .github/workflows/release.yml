@@ -1,0 +1,88 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: cairn-linux-x86_64.tar.gz
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            archive: cairn-linux-aarch64.tar.gz
+            cross: true
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            archive: cairn-macos-x86_64.tar.gz
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            archive: cairn-macos-aarch64.tar.gz
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross (for cross-compilation)
+        if: matrix.cross
+        run: cargo install cross --locked
+
+      - name: Build release binaries
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build --release --target ${{ matrix.target }}
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
+
+      - name: Package archive
+        run: |
+          STAGING="cairn-${{ github.ref_name }}-${{ matrix.target }}"
+          mkdir -p "$STAGING"
+          for bin in cairn-cli cairn-mcp cairn-server cairn-tui; do
+            cp "target/${{ matrix.target }}/release/$bin" "$STAGING/" 2>/dev/null || true
+          done
+          cp install.sh "$STAGING/"
+          cp hooks/*.sh "$STAGING/" 2>/dev/null || true
+          cp LICENSE "$STAGING/"
+          cp README.md "$STAGING/"
+          tar czf "${{ matrix.archive }}" "$STAGING"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: ${{ matrix.archive }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: artifacts/**/*.tar.gz

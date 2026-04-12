@@ -1,40 +1,16 @@
 # Cairn
 
-> Cairns are stone stacks hikers build to mark trails through unfamiliar terrain. You build them as you go. Each one is personal — every hiker stacks differently. They accumulate over time. They don't describe the landscape; they say *"I was here, go this way."*
+A **persistent knowledge graph** for AI coding agents. Stores codebase structure, dependencies, gotchas, war stories, and decisions in a SurrealDB-backed graph, exposed via MCP tools and a CLI. The agent builds and maintains the graph as it works; you curate it via the TUI.
 
-Cairn is a **personal knowledge graph** that an AI coding agent uses to accumulate, retrieve, and refine understanding of a large codebase over time.
+## What it does
 
-It is **not** shared documentation. It is one developer's evolving map of the codebase — detailed descriptions of every module and feature, opinions, war stories, gotchas, discovered dependencies — stored in a structured graph and written in that developer's voice. Think of it as **a granular, interconnected CLAUDE.md for your entire monorepo** that the agent builds and maintains as it works.
-
-## The problem
-
-AI coding agents start every session from zero. They re-read the same files, re-discover the same relationships, and make the same mistakes. CLAUDE.md helps, but it's a flat file — it can't capture the web of dependencies, contradictions, and hard-won lessons that make a senior engineer effective in a large codebase.
-
-In a large monorepo, the problem is worse. There are hundreds of modules, services, and features. No one person holds the full map in their head. The agent needs to build that map as it works — and keep it across sessions.
-
-## What Cairn does
-
-Cairn gives your AI agent a **persistent, queryable memory** that grows organically through normal work. It serves two purposes:
-
-### 1. Codebase atlas
-
-As the agent works through code, it catalogues what it finds — building a detailed, interconnected map of the codebase. Each significant module, feature, service, or logical chunk gets its own topic with a description of what it does, how it works, where the key files are, and why it's built that way. Topics are linked with typed edges that capture dependencies, data flows, and ownership. Think of it as **granular, nested CLAUDE.md files for every part of the codebase, connected into a graph**.
-
-### 2. Institutional memory
-
-Beyond structure, the agent records the things that aren't in the code: why something was built a certain way, what broke last month, which abstractions are premature, what gotchas to watch for. Opinions, war stories, and lessons learned — in your voice.
-
-### How it works
-
-- **Topics** are the primary unit of knowledge — "payments/retry", "auth/oauth", "infra/event-bus"
-- **Edges** connect topics with typed relationships — `depends_on`, `gotcha`, `war_story`, `contradicts`, `replaced_by`, `see_also`, `owns`
-- **Blocks** are ordered chunks of content within a topic, each with an optional voice/mood annotation
-- **Voice** captures your personality, preferences, and coding style so the agent writes entries in your voice
-- The agent **primes itself** at the start of every task by searching the graph for relevant context
-- The agent **catalogues and learns automatically** during work — describing modules it reads and recording non-obvious insights
-- **Hooks** checkpoint the graph periodically and before context compaction, so nothing is lost
-
-After a few sessions, the graph is already useful. By session ten, the agent knows the structure of your codebase, which modules are fragile, why that abstraction exists, what broke last month, and who owns what — without being told.
+- **Topics** — each module, service, or logical area gets a topic: "payments/retry", "auth/oauth", "infra/event-bus"
+- **Edges** — typed relationships between topics: `depends_on`, `gotcha`, `war_story`, `contradicts`, `replaced_by`, `see_also`, `owns`
+- **Blocks** — ordered content chunks within a topic, written in the developer's voice
+- **Pre-flight briefing** — at task start, `prime` traverses the graph topology (not just keyword search) and returns constraints, impact radius, war stories, contradictions, and staleness warnings for the areas the agent is about to touch
+- **Adaptive contract** — the behavioral protocol adjusts to graph health: sparse graphs get bootstrapping guidance, stale graphs get verification prompts, per-task notes flag stale or missing coverage
+- **TUI editor** — full vim-like editor with exclusive edit-mode lock, command palette, and contextual actions for direct curation
+- **Zero-prompt operation** — the agent knows what to do via the behavioral contract returned by `graph_status`. No setup prompts required
 
 ## Architecture
 
@@ -242,35 +218,12 @@ Agents in ./.claude/agents:
 
 Run it after a Cairn update to confirm everything is in sync.
 
-## How Claude Code uses Cairn
+## Agent workflow
 
-Once the MCP server is connected, the agent operates automatically via the **behavioral contract** — a set of instructions returned by `graph_status` that tells the agent how to use the graph. No prompting required.
-
-The contract is **context-adaptive**: it adjusts its guidance based on the graph's health. A sparse graph (< 5 topics) gets a "bootstrapping" preamble urging aggressive cataloguing. A graph with > 30% stale topics gets a staleness warning. `prime` injects per-task notes when matched topics are stale or when no topics match at all. A healthy, well-maintained graph gets a clean contract with no situational noise.
-
-### Automatic workflow
-
-1. **At task start**, the agent calls `graph_status` to get the contract and your voice, then calls `prime` with the task description to retrieve relevant context
-2. **During work**, the agent calls `learn` when it discovers something non-obvious, `connect` when it finds relationships, and `amend` when prior knowledge is wrong
-3. **At session end**, the Stop hook calls `checkpoint` to persist everything
-4. **Before context compaction**, the PreCompact hook emergency-flushes to prevent knowledge loss
-
-### What the agent records
-
-The agent builds two layers of knowledge:
-
-**Codebase structure** — as it reads and modifies code, it creates topics that describe what each logical area does, how it's organized, and how it connects to other areas:
-
-- "payments/retry: Handles failed payment retries with exponential backoff + jitter. Entry point is `RetryWorker` in `payments/retry/worker.rs`. Pulls from the `payment_events` SQS queue. Max 5 retries, then DLQ. Config in `payments/retry/config.toml`."
-- "auth/oauth: OAuth2 integration with Google and GitHub. Uses the `oauth2` crate. Token refresh is handled by `TokenManager` which runs as a background task. Scopes are defined per-provider in `auth/providers/`."
-
-**Insights and opinions** — things that aren't in the code itself:
-
-- "This retry logic is fragile because the DLQ silently swallows exceptions when full"
-- "The auth middleware was rewritten for compliance, not tech debt — scope decisions should favor compliance"
-- "billing-retry depends on event-bus-serialization because retry logic reads the format header"
-
-The agent writes in **your voice**, using the personality you set during init. It uses **hierarchical topic keys** (e.g., `payments/retry`, `payments/webhooks`, `auth/oauth`) to reflect the logical structure of the codebase.
+1. **`graph_status`** — returns the adaptive behavioral contract + voice + stats. Called once at session start.
+2. **`prime(task)`** — searches the graph, traverses 2-hop edges, returns a pre-flight briefing (constraints, impact radius, war stories, contradictions, stale areas) + relevant topic content. Called at task start.
+3. **`learn` / `connect` / `amend`** — the agent records structure, insights, and corrections as it works.
+4. **Hooks** — `Stop` checkpoints the session, `PreCompact` emergency-flushes before context compaction.
 
 ### MCP tools available to the agent
 
