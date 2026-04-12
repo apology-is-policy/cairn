@@ -730,4 +730,238 @@ mod tests {
         assert_eq!(result.stats.total, 1);
         assert_eq!(result.voice.as_deref(), Some("I write Rust."));
     }
+
+    // ── Pre-flight briefing tests ────────────────────────────────
+
+    /// Helper: create a topic with the given key and title.
+    async fn make_topic(db: &CairnDb, key: &str, title: &str, content: &str) {
+        ops::learn(
+            db,
+            LearnParams {
+                topic_key: key.into(),
+                title: Some(title.into()),
+                summary: Some(format!("{title} summary")),
+                content: content.into(),
+                voice: None,
+                tags: vec![],
+                position: Position::End,
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    /// Helper: create an edge.
+    async fn make_edge(db: &CairnDb, from: &str, to: &str, kind: EdgeKind, note: &str) {
+        ops::connect(
+            db,
+            ConnectParams {
+                from_key: from.into(),
+                to_key: to.into(),
+                edge_type: kind,
+                note: note.into(),
+                severity: None,
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_preflight_gotcha_constraint() {
+        let db = test_db().await;
+        init_defaults(&db, Some("voice")).await.unwrap();
+
+        make_topic(&db, "payments/retry", "Payment retry", "Retry logic").await;
+        make_topic(&db, "payments/idempotency", "Idempotency", "Dedup logic").await;
+        make_edge(
+            &db,
+            "payments/retry",
+            "payments/idempotency",
+            EdgeKind::Gotcha,
+            "Must check idempotency key before retrying",
+        )
+        .await;
+
+        let result = prime(
+            &db,
+            PrimeParams {
+                task: "Fix the payment retry timeout".into(),
+                max_tokens: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            result.context.contains("Constraints (gotchas)"),
+            "Pre-flight should include gotcha constraints, got:\n{}",
+            result.context
+        );
+        assert!(result.context.contains("idempotency key"));
+    }
+
+    #[tokio::test]
+    async fn test_preflight_impact_radius() {
+        let db = test_db().await;
+        init_defaults(&db, Some("voice")).await.unwrap();
+
+        make_topic(&db, "infra/event-bus", "Event bus", "Message bus").await;
+        make_topic(&db, "payments/retry", "Payment retry", "Retry logic").await;
+        make_edge(
+            &db,
+            "payments/retry",
+            "infra/event-bus",
+            EdgeKind::DependsOn,
+            "Retry reads the event bus format header",
+        )
+        .await;
+
+        let result = prime(
+            &db,
+            PrimeParams {
+                task: "Refactor the event bus serialization".into(),
+                max_tokens: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            result.context.contains("Impact radius"),
+            "Pre-flight should show dependents, got:\n{}",
+            result.context
+        );
+        assert!(result.context.contains("payments/retry depends on"));
+    }
+
+    #[tokio::test]
+    async fn test_preflight_war_story() {
+        let db = test_db().await;
+        init_defaults(&db, Some("voice")).await.unwrap();
+
+        make_topic(&db, "payments/webhooks", "Webhooks", "Webhook handler").await;
+        make_topic(&db, "incidents/webhook-storm", "Webhook storm", "50k dupes").await;
+        make_edge(
+            &db,
+            "payments/webhooks",
+            "incidents/webhook-storm",
+            EdgeKind::WarStory,
+            "Stripe sent 50k duplicate webhooks, 2h incident",
+        )
+        .await;
+
+        let result = prime(
+            &db,
+            PrimeParams {
+                task: "Add new webhook endpoint for payment provider".into(),
+                max_tokens: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            result.context.contains("War stories"),
+            "Pre-flight should include war stories, got:\n{}",
+            result.context
+        );
+        assert!(result.context.contains("50k duplicate"));
+    }
+
+    #[tokio::test]
+    async fn test_preflight_contradiction() {
+        let db = test_db().await;
+        init_defaults(&db, Some("voice")).await.unwrap();
+
+        make_topic(&db, "api/rest-spec", "REST API specification", "All APIs use REST endpoints").await;
+        make_topic(&db, "api/grpc-spec", "gRPC API specification", "Some APIs use gRPC endpoints").await;
+        make_edge(
+            &db,
+            "api/rest-spec",
+            "api/grpc-spec",
+            EdgeKind::Contradicts,
+            "REST spec says all APIs are REST, but gRPC spec exists",
+        )
+        .await;
+
+        let result = prime(
+            &db,
+            PrimeParams {
+                task: "Update the REST API spec".into(),
+                max_tokens: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            result.context.contains("Contradictions"),
+            "Pre-flight should flag contradictions, got:\n{}",
+            result.context
+        );
+    }
+
+    #[tokio::test]
+    async fn test_preflight_empty_when_no_edges() {
+        let db = test_db().await;
+        init_defaults(&db, Some("voice")).await.unwrap();
+
+        // Topic with no edges — pre-flight should be empty (no sections).
+        make_topic(&db, "standalone", "Standalone module", "No dependencies").await;
+
+        let result = prime(
+            &db,
+            PrimeParams {
+                task: "Work on standalone module".into(),
+                max_tokens: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            !result.context.contains("Pre-flight"),
+            "Pre-flight should be empty for a topic with no edges, got:\n{}",
+            result.context
+        );
+    }
+
+    #[tokio::test]
+    async fn test_preflight_appears_before_topic_content() {
+        let db = test_db().await;
+        init_defaults(&db, Some("voice")).await.unwrap();
+
+        make_topic(&db, "alpha", "Alpha", "Alpha content here").await;
+        make_topic(&db, "beta", "Beta", "Beta content here").await;
+        make_edge(
+            &db,
+            "alpha",
+            "beta",
+            EdgeKind::Gotcha,
+            "Watch out for beta",
+        )
+        .await;
+
+        let result = prime(
+            &db,
+            PrimeParams {
+                task: "Work on alpha".into(),
+                max_tokens: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let preflight_pos = result.context.find("Pre-flight");
+        let content_pos = result.context.find("Alpha content here");
+        assert!(
+            preflight_pos.is_some() && content_pos.is_some(),
+            "Both pre-flight and content should be present"
+        );
+        assert!(
+            preflight_pos.unwrap() < content_pos.unwrap(),
+            "Pre-flight should appear BEFORE topic content"
+        );
+    }
 }
