@@ -543,15 +543,11 @@ enum Overlay {
         title: String,
         textarea: Box<tui_textarea::TextArea<'static>>,
         purpose: TextInputPurpose,
-        /// When true, keys go to the command buffer instead of the textarea.
-        command_mode: bool,
-        /// The command being typed (e.g. "w", "wq").
-        command_buf: String,
+        /// Vim-like editor mode.
+        editor_mode: EditorMode,
         /// Original content for dirty-checking (`:q` warns if modified).
         original: String,
         /// True if `:w` was used on a non-terminal purpose (amend).
-        /// When set, `:q` will chain to the save flow (reason prompt)
-        /// instead of silently closing.
         pending_save: bool,
     },
     /// Single-line text input for short prompts (reason, rename key).
@@ -646,6 +642,17 @@ enum LineInputPurpose {
         topic_key: String,
         block_id: String,
     },
+}
+
+/// Vim-like modal state for the TextInput editor.
+#[derive(Clone)]
+enum EditorMode {
+    /// Normal mode: movement keys, `:` for commands, `i` for insert.
+    Normal,
+    /// Insert mode: all keys go to the textarea. Esc returns to Normal.
+    Insert,
+    /// Command mode (after `:` in Normal): typing a command like `w`, `q`, `wq`.
+    Command(String),
 }
 
 enum TopicPickerPurpose {
@@ -1119,8 +1126,7 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                         title: format!("Summary for '{}'", topic_key),
                         textarea: Box::new(textarea),
                         purpose: TextInputPurpose::EditSummary { topic_key },
-                        command_mode: false,
-                        command_buf: String::new(),
+                        editor_mode: EditorMode::Normal,
                         original: current,
                         pending_save: false,
                     });
@@ -1141,8 +1147,7 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                         title: format!("New block in '{}'", topic_key),
                         textarea: Box::new(textarea),
                         purpose: TextInputPurpose::AddBlockContent { topic_key },
-                        command_mode: false,
-                        command_buf: String::new(),
+                        editor_mode: EditorMode::Normal,
                         original: String::new(),
                         pending_save: false,
                     });
@@ -1272,8 +1277,7 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                                 topic_key,
                                 block_id: block.id.clone(),
                             },
-                            command_mode: false,
-                            command_buf: String::new(),
+                            editor_mode: EditorMode::Normal,
                             original: block.content.clone(),
                             pending_save: false,
                         });
@@ -1356,8 +1360,7 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                                 title: "Edit developer voice".into(),
                                 textarea: Box::new(textarea),
                                 purpose: TextInputPurpose::EditVoice,
-                                command_mode: false,
-                                command_buf: String::new(),
+                                editor_mode: EditorMode::Normal,
                                 original: content,
                                 pending_save: false,
                             });
@@ -1926,46 +1929,90 @@ async fn handle_overlay_key(
             textarea: mut textarea_box,
             title,
             purpose,
-            command_mode,
-            command_buf,
+            editor_mode,
             original,
             pending_save,
         } => {
             let textarea = &mut *textarea_box;
-            let mut command_mode = command_mode;
-            let mut command_buf = command_buf;
 
-            // ── Command mode (entered via Esc) ──
-            if command_mode {
-                match key.code {
-                    KeyCode::Esc => {
-                        // Exit command mode, resume editing.
-                        app.overlay = Some(Overlay::TextInput {
-                            textarea: textarea_box,
-                            title,
-                            purpose,
-                            command_mode: false,
-                            command_buf: String::new(),
-                            original,
-                            pending_save,
-                        });
-                        OverlayResult::Consumed
+            // Helper to put the overlay back with a given mode.
+            macro_rules! stay {
+                ($mode:expr) => {{
+                    app.overlay = Some(Overlay::TextInput {
+                        textarea: textarea_box,
+                        title,
+                        purpose,
+                        editor_mode: $mode,
+                        original,
+                        pending_save,
+                    });
+                    OverlayResult::Consumed
+                }};
+            }
+
+            match editor_mode {
+                // ── NORMAL mode: commands, no text insertion ──
+                EditorMode::Normal => match key.code {
+                    KeyCode::Char('i') => stay!(EditorMode::Insert),
+                    KeyCode::Char(':') => stay!(EditorMode::Command(":".into())),
+                    // Movement in normal mode — pass to textarea
+                    KeyCode::Char('h') | KeyCode::Left => {
+                        textarea.input(crossterm::event::KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+                        stay!(EditorMode::Normal)
                     }
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        textarea.input(crossterm::event::KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+                        stay!(EditorMode::Normal)
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        textarea.input(crossterm::event::KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+                        stay!(EditorMode::Normal)
+                    }
+                    KeyCode::Char('l') | KeyCode::Right => {
+                        textarea.input(crossterm::event::KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+                        stay!(EditorMode::Normal)
+                    }
+                    KeyCode::Char('0') | KeyCode::Home => {
+                        textarea.input(crossterm::event::KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+                        stay!(EditorMode::Normal)
+                    }
+                    KeyCode::Char('$') | KeyCode::End => {
+                        textarea.input(crossterm::event::KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+                        stay!(EditorMode::Normal)
+                    }
+                    KeyCode::Char('g') => {
+                        textarea.move_cursor(tui_textarea::CursorMove::Top);
+                        stay!(EditorMode::Normal)
+                    }
+                    KeyCode::Char('G') => {
+                        textarea.move_cursor(tui_textarea::CursorMove::Bottom);
+                        stay!(EditorMode::Normal)
+                    }
+                    _ => stay!(EditorMode::Normal),
+                },
+
+                // ── INSERT mode: all keys to textarea, Esc → Normal ──
+                EditorMode::Insert => {
+                    if key.code == KeyCode::Esc {
+                        stay!(EditorMode::Normal)
+                    } else {
+                        textarea.input(key);
+                        stay!(EditorMode::Insert)
+                    }
+                }
+
+                // ── COMMAND mode: `:` prompt at bottom ──
+                EditorMode::Command(mut buf) => match key.code {
+                    KeyCode::Esc => stay!(EditorMode::Normal),
                     KeyCode::Enter => {
-                        let cmd = command_buf.trim_start_matches(':').trim().to_string();
+                        let cmd = buf.trim_start_matches(':').trim().to_string();
                         match cmd.as_str() {
                             "wq" => {
-                                // Save and close (proceed to next step).
                                 let content = unwrap_soft(textarea.lines());
                                 dispatch_text_save(app, client, purpose, content).await;
+                                OverlayResult::Consumed
                             }
                             "w" => {
-                                // Save and keep the editor open.
-                                // For terminal purposes (voice, summary, learn,
-                                // add-block), dispatch the save immediately and
-                                // re-open. For amend (which needs a reason to
-                                // complete), just update the baseline — the
-                                // actual save happens on :wq.
                                 let content = unwrap_soft(textarea.lines());
                                 let is_terminal = !matches!(purpose, TextInputPurpose::AmendBlock { .. });
                                 if is_terminal {
@@ -1979,136 +2026,56 @@ async fn handle_overlay_key(
                                         title,
                                         textarea: Box::new(new_ta),
                                         purpose: purpose_clone,
-                                        command_mode: false,
-                                        command_buf: String::new(),
+                                        editor_mode: EditorMode::Normal,
                                         original: content,
-                                        pending_save: false, // terminal save resets
+                                        pending_save: false,
                                     });
                                 } else {
-                                    // Amend: keep editing, update baseline so
-                                    // :q won't warn. Content is saved on :wq.
                                     app.overlay = Some(Overlay::TextInput {
                                         textarea: textarea_box,
                                         title,
                                         purpose,
-                                        command_mode: false,
-                                        command_buf: String::new(),
+                                        editor_mode: EditorMode::Normal,
                                         original: content,
                                         pending_save: true,
                                     });
                                 }
+                                OverlayResult::Consumed
                             }
                             "q" => {
                                 let current = unwrap_soft(textarea.lines());
                                 if pending_save {
-                                    // User did :w earlier on an amend editor.
-                                    // :q now completes the save by chaining to
-                                    // the reason prompt (same as :wq).
                                     dispatch_text_save(app, client, purpose, current).await;
                                     return OverlayResult::Consumed;
                                 }
                                 if current != original {
-                                    // Unsaved changes — stay in editor silently
-                                    // (vim behavior: :q fails when dirty).
-                                    app.overlay = Some(Overlay::TextInput {
-                                        textarea: textarea_box,
-                                        title,
-                                        purpose,
-                                        command_mode: false,
-                                        command_buf: String::new(),
-                                        original,
-                                        pending_save,
-                                    });
-                                    return OverlayResult::Consumed;
+                                    // :q fails silently when dirty.
+                                    stay!(EditorMode::Normal)
+                                } else {
+                                    OverlayResult::Consumed
                                 }
-                                // No changes, no pending save — close silently.
                             }
                             "q!" => {
                                 notify_ok(app, "Editor closed (changes discarded)".into());
+                                OverlayResult::Consumed
                             }
-                            _ => {
-                                // Unknown command — show in bar, user can edit.
-                                app.overlay = Some(Overlay::TextInput {
-                                    textarea: textarea_box,
-                                    title,
-                                    purpose,
-                                    command_mode: true,
-                                    command_buf: format!("unknown: {cmd}"),
-                                    original,
-                                    pending_save,
-                                });
-                                return OverlayResult::Consumed;
-                            }
+                            _ => stay!(EditorMode::Command(format!("unknown: {cmd}"))),
                         }
-                        OverlayResult::Consumed
                     }
                     KeyCode::Char(c) => {
-                        command_buf.push(c);
-                        app.overlay = Some(Overlay::TextInput {
-                            textarea: textarea_box,
-                            title,
-                            purpose,
-                            command_mode,
-                            command_buf,
-                            original,
-                            pending_save,
-                        });
-                        OverlayResult::Consumed
+                        buf.push(c);
+                        stay!(EditorMode::Command(buf))
                     }
                     KeyCode::Backspace => {
-                        command_buf.pop();
-                        if command_buf.is_empty() {
-                            command_mode = false;
+                        buf.pop();
+                        if buf.is_empty() {
+                            stay!(EditorMode::Normal)
+                        } else {
+                            stay!(EditorMode::Command(buf))
                         }
-                        app.overlay = Some(Overlay::TextInput {
-                            textarea: textarea_box,
-                            title,
-                            purpose,
-                            command_mode,
-                            command_buf,
-                            original,
-                            pending_save,
-                        });
-                        OverlayResult::Consumed
                     }
-                    _ => {
-                        app.overlay = Some(Overlay::TextInput {
-                            textarea: textarea_box,
-                            title,
-                            purpose,
-                            command_mode,
-                            command_buf,
-                            original,
-                            pending_save,
-                        });
-                        OverlayResult::Consumed
-                    }
-                }
-            } else if key.code == KeyCode::Esc {
-                // Enter command mode — empty buffer, user types : themselves.
-                app.overlay = Some(Overlay::TextInput {
-                    textarea: textarea_box,
-                    title,
-                    purpose,
-                    command_mode: true,
-                    command_buf: String::new(),
-                    original,
-                    pending_save,
-                });
-                OverlayResult::Consumed
-            } else {
-                // Pass the key event to tui-textarea for editing.
-                textarea.input(key);
-                app.overlay = Some(Overlay::TextInput {
-                    textarea: textarea_box,
-                    title,
-                    purpose,
-                    command_mode: false,
-                    command_buf: String::new(),
-                    original,
-                    pending_save,
-                });
-                OverlayResult::Consumed
+                    _ => stay!(EditorMode::Command(buf)),
+                },
             }
         }
         Overlay::LineInput {
@@ -2209,8 +2176,7 @@ async fn handle_overlay_key(
                                 topic_key,
                                 title: value,
                             },
-                            command_mode: false,
-                            command_buf: String::new(),
+                            editor_mode: EditorMode::Normal,
                             original: String::new(),
                             pending_save: false,
                         });
@@ -2538,8 +2504,7 @@ async fn handle_overlay_key(
                                     topic_key,
                                     block_id: block_id.clone(),
                                 },
-                                command_mode: false,
-                                command_buf: String::new(),
+                                editor_mode: EditorMode::Normal,
                                 original: block.content.clone(),
                                 pending_save: false,
                             });
@@ -2949,12 +2914,16 @@ fn draw_overlay(f: &mut Frame, app: &App, area: Rect) {
         Overlay::TextInput {
             title,
             textarea: textarea_box,
-            command_mode,
-            command_buf,
+            editor_mode,
             ..
         } => {
             let textarea = &**textarea_box;
-            // Full-width, ~80% height editor overlay.
+            // Mode indicator + title
+            let mode_label = match editor_mode {
+                EditorMode::Normal => ("NOR", Color::Cyan),
+                EditorMode::Insert => ("INS", Color::Green),
+                EditorMode::Command(_) => ("CMD", Color::Yellow),
+            };
             let margin = 2u16;
             let w = area.width.saturating_sub(margin * 2);
             let h = area.height.saturating_sub(margin * 2);
@@ -2963,16 +2932,19 @@ fn draw_overlay(f: &mut Frame, app: &App, area: Rect) {
 
             let block = Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Yellow))
-                .title(format!(" {} ", title))
+                .border_style(Style::default().fg(mode_label.1))
+                .title(format!(
+                    " [{}] {} ",
+                    mode_label.0, title
+                ))
                 .style(Style::default().bg(Color::Black));
             let inner = block.inner(editor_area);
             f.render_widget(block, editor_area);
 
-            // Render the textarea inside the block.
+            // Render the textarea.
             f.render_widget(textarea, inner);
 
-            // Hint line / command prompt at the bottom.
+            // Status / hint line at the bottom.
             if editor_area.height >= 3 {
                 let hint_area = Rect::new(
                     editor_area.x + 1,
@@ -2980,58 +2952,43 @@ fn draw_overlay(f: &mut Frame, app: &App, area: Rect) {
                     editor_area.width.saturating_sub(2),
                     1,
                 );
-                let hints = if *command_mode {
-                    Line::from(vec![
+                let hints = match editor_mode {
+                    EditorMode::Normal => Line::from(vec![
                         Span::styled(
-                            if command_buf.is_empty() { " " } else { "" },
-                            Style::default(),
+                            " NOR ",
+                            Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD),
                         ),
+                        Span::styled("  i", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                        Span::styled(" insert  ", Style::default().fg(Color::DarkGray)),
+                        Span::styled(":", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                        Span::styled(" command  ", Style::default().fg(Color::DarkGray)),
+                        Span::styled("hjkl", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                        Span::styled(" move", Style::default().fg(Color::DarkGray)),
+                    ]),
+                    EditorMode::Insert => Line::from(vec![
                         Span::styled(
-                            command_buf.clone(),
-                            Style::default()
-                                .fg(Color::White)
-                                .add_modifier(Modifier::BOLD),
+                            " INS ",
+                            Style::default().fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD),
                         ),
+                        Span::styled("  Esc", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                        Span::styled(" normal mode", Style::default().fg(Color::DarkGray)),
+                    ]),
+                    EditorMode::Command(ref buf) => Line::from(vec![
                         Span::styled(
-                            "_ ",
+                            " CMD ",
+                            Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled("  ", Style::default()),
+                        Span::styled(
+                            buf.clone(),
+                            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled("_", Style::default().fg(Color::DarkGray)),
+                        Span::styled(
+                            "   :w save  :q quit  :wq save+quit  Esc cancel",
                             Style::default().fg(Color::DarkGray),
                         ),
-                        Span::styled(
-                            "  :w save  :q quit  :wq save+quit  Esc resume",
-                            Style::default().fg(Color::DarkGray),
-                        ),
-                    ])
-                } else {
-                    Line::from(vec![
-                        Span::styled(
-                            "Esc",
-                            Style::default()
-                                .fg(Color::Yellow)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled(" command mode  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled(
-                            ":w",
-                            Style::default()
-                                .fg(Color::Yellow)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled(" save  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled(
-                            ":wq",
-                            Style::default()
-                                .fg(Color::Yellow)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled(" save+quit  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled(
-                            ":q",
-                            Style::default()
-                                .fg(Color::Yellow)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled(" quit", Style::default().fg(Color::DarkGray)),
-                    ])
+                    ]),
                 };
                 f.render_widget(
                     Paragraph::new(hints).style(Style::default().bg(Color::Black)),
