@@ -9,7 +9,7 @@ const SCHEMA: &str = include_str!("schema.surql");
 
 /// The schema version this binary knows how to handle.
 /// Bump when adding migrations.
-pub const CURRENT_SCHEMA_VERSION: i64 = 2;
+pub const CURRENT_SCHEMA_VERSION: i64 = 3;
 
 pub struct CairnDb {
     pub(crate) db: Surreal<Db>,
@@ -77,16 +77,24 @@ impl CairnDb {
 
         if db_version < 2 {
             // v2: Add `locked` field to topic table.
-            // DEFINE FIELD sets the default for new records, but existing
-            // records keep NULL. Backfill explicitly.
             self.db
-                .query(
-                    "DEFINE FIELD locked ON topic TYPE bool DEFAULT false;
-                     UPDATE topic SET locked = false WHERE locked = NONE;",
-                )
+                .query("DEFINE FIELD locked ON topic TYPE bool DEFAULT false")
                 .await
                 .map_err(|e| CairnError::Db(format!("v2 migration failed: {e}")))?;
             self.set_schema_version(2).await?;
+        }
+
+        if db_version < 3 {
+            // v3: Backfill locked=false on all existing topics.
+            // The v2 migration defined the field but didn't backfill —
+            // existing records kept NULL, causing deserialization failures.
+            // Use unconditional SET to handle NULL, NONE, and any other
+            // missing-value representation SurrealDB might use.
+            self.db
+                .query("UPDATE topic SET locked = false")
+                .await
+                .map_err(|e| CairnError::Db(format!("v3 migration failed: {e}")))?;
+            self.set_schema_version(3).await?;
         }
 
         Ok(())
