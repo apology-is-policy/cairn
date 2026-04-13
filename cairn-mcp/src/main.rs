@@ -227,6 +227,24 @@ pub struct NewBlockRequest {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct BatchRewriteRequest {
+    /// List of topics to rewrite. Each entry is processed sequentially.
+    pub entries: Vec<BatchRewriteEntryRequest>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BatchRewriteEntryRequest {
+    /// Topic key to rewrite
+    pub topic_key: String,
+    /// New content blocks
+    pub new_blocks: Vec<NewBlockRequest>,
+    /// Reason for rewrite
+    pub reason: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct HistoryRequest {
     /// Filter to a specific topic (optional)
     pub topic_key: Option<String>,
@@ -596,6 +614,38 @@ impl CairnMcpServer {
                 new_blocks,
                 reason: req.reason,
             })
+            .await
+            .map_err(cairn_err)?;
+        to_json_content(&result)
+    }
+
+    #[tool(
+        description = "Rewrite multiple topics in a single call. Each entry has a topic_key, new_blocks, and reason. Errors on individual entries don't abort the batch. Use for bulk knowledge ingestion sessions."
+    )]
+    async fn batch_rewrite(
+        &self,
+        Parameters(req): Parameters<BatchRewriteRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let entries = req
+            .entries
+            .into_iter()
+            .map(|e| cairn_core::BatchRewriteEntry {
+                topic_key: e.topic_key,
+                new_blocks: e
+                    .new_blocks
+                    .into_iter()
+                    .map(|b| cairn_core::NewBlock {
+                        content: b.content,
+                        voice: b.voice,
+                    })
+                    .collect(),
+                reason: e.reason,
+            })
+            .collect();
+
+        let result = self
+            .cairn
+            .batch_rewrite(cairn_core::BatchRewriteParams { entries })
             .await
             .map_err(cairn_err)?;
         to_json_content(&result)
