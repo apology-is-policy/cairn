@@ -403,6 +403,38 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                     notify_err(app, "Select a topic first".into());
                 }
             }
+            Action::LockTopic => {
+                if require_edit_mode(app, action) {
+                    // Will re-dispatch after lock acquired.
+                } else if let Some(key) = app.selected_key() {
+                    match client.lock_topic(&key).await {
+                        Ok(()) => {
+                            notify_ok(app, format!("Locked '{key}' — agents can't modify it"));
+                            app.caches = TopicCaches::default();
+                            app.fetch_active_tab(client).await;
+                        }
+                        Err(e) => notify_err(app, format!("Lock failed: {e}")),
+                    }
+                } else {
+                    notify_err(app, "Select a topic first".into());
+                }
+            }
+            Action::UnlockTopic => {
+                if require_edit_mode(app, action) {
+                    // Will re-dispatch after lock acquired.
+                } else if let Some(key) = app.selected_key() {
+                    match client.unlock_topic(&key).await {
+                        Ok(()) => {
+                            notify_ok(app, format!("Unlocked '{key}' — editable again"));
+                            app.caches = TopicCaches::default();
+                            app.fetch_active_tab(client).await;
+                        }
+                        Err(e) => notify_err(app, format!("Unlock failed: {e}")),
+                    }
+                } else {
+                    notify_err(app, "Select a topic first".into());
+                }
+            }
             Action::ToggleFocus => {
                 app.focus = match app.focus {
                     Focus::Left => Focus::Right,

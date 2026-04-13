@@ -985,6 +985,15 @@ pub fn detail_lines(
             Style::default().add_modifier(Modifier::BOLD),
         ),
     ];
+    if t.locked {
+        header_spans.push(Span::raw("  "));
+        header_spans.push(Span::styled(
+            "[locked]",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
     if t.deprecated {
         header_spans.push(Span::raw("  "));
         header_spans.push(Span::styled(

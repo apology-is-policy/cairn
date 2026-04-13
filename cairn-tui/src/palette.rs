@@ -185,6 +185,22 @@ pub fn all_palette_commands() -> Vec<PaletteCommand> {
             browse_only: false,
         },
         PaletteCommand {
+            name: "Lock topic",
+            description: "Make the selected topic read-only (agents can't modify)",
+            key_hint: Some("L"),
+            action: Action::LockTopic,
+            edit_only: true,
+            browse_only: false,
+        },
+        PaletteCommand {
+            name: "Unlock topic",
+            description: "Make the selected topic editable again",
+            key_hint: Some("U"),
+            action: Action::UnlockTopic,
+            edit_only: true,
+            browse_only: false,
+        },
+        PaletteCommand {
             name: "Exit edit mode",
             description: "Release the editor lock",
             key_hint: Some("Esc"),

@@ -55,6 +55,10 @@ pub enum Action {
     MoveBlockDown,
     /// Delete a block from the selected topic.
     DeleteBlock,
+    /// Lock the selected topic (read-only for agents).
+    LockTopic,
+    /// Unlock the selected topic (make editable again).
+    UnlockTopic,
     /// Edit the summary of the selected topic.
     EditSummary,
     /// Add a new block to the selected topic.
@@ -117,6 +121,8 @@ pub fn handle_browse_key(
         KeyCode::Char('s') if edit_mode => Action::EditSummary,
         KeyCode::Char('b') if edit_mode => Action::AddBlock,
         KeyCode::Char('D') if edit_mode => Action::DeleteBlock,
+        KeyCode::Char('L') if edit_mode => Action::LockTopic,
+        KeyCode::Char('U') if edit_mode => Action::UnlockTopic,
         KeyCode::Char('K') if edit_mode => Action::MoveBlockUp,
         KeyCode::Char('J') if edit_mode => Action::MoveBlockDown,
         KeyCode::Char('e') => Action::RequestEditMode,
@@ -184,6 +190,14 @@ pub fn build_context_menu(app: &App) -> Vec<ContextMenuItem> {
                     items.push(ContextMenuItem {
                         label: "Edit summary".into(),
                         action: Action::EditSummary,
+                    });
+                    items.push(ContextMenuItem {
+                        label: "Lock topic".into(),
+                        action: Action::LockTopic,
+                    });
+                    items.push(ContextMenuItem {
+                        label: "Unlock topic".into(),
+                        action: Action::UnlockTopic,
                     });
                 }
                 // Read-only actions always available.
