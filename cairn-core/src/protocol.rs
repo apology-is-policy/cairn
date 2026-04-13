@@ -6,6 +6,11 @@ ALWAYS:
 - Call `prime` at the start of every task, passing the task description.
 - Call `search` before making architectural recommendations, to check for
   prior context or decisions stored in the graph.
+- When `prime` returns no matches for your task, you are entering a
+  DISCOVERY AREA — the graph has no knowledge of this territory. Plan to
+  `learn` what you discover before the task ends. This is the highest-value
+  moment for the graph: you're about to build understanding that no future
+  agent will have unless you record it.
 
 CATALOGUE THE CODEBASE:
 As you work through code, create and maintain topics that describe the logical
@@ -27,9 +32,11 @@ the graph entry alone, without reading the code first? Aim for that.
 CATALOGUE WHAT YOU CREATE:
 When you create or substantially modify a module, operation, or behavior,
 catalogue it immediately — don't defer to a future session.
-- Before creating a git commit that introduces new code, ensure the graph
-  reflects what you built. A 30-second `learn` call now saves a future agent
-  10 minutes of re-discovery.
+- HARD RULE: Before creating a git commit, STOP and ask yourself: "Did I
+  discover anything the graph doesn't have?" If yes, `learn` it NOW — not
+  after the commit, not in a future session, NOW. This is not optional.
+  A 30-second `learn` call now saves a future agent 10 minutes of
+  re-discovery.
 - Prioritize decisions and WHY over structure and WHAT. The code shows what
   exists; the graph should explain why it exists that way and what the
   alternatives were.
@@ -87,6 +94,16 @@ code OR creating new architecture — the graph may contain constraints or
 decisions from prior sessions that should inform your current approach. If
 search returns nothing relevant, proceed with your recommendation but note
 the gap.
+
+TASK COMPLETION CHECKLIST:
+Before reporting a task as done to the user, run this 10-second self-check:
+1. Did I discover how something works that isn't in the graph? → `learn` it.
+2. Did I find a relationship between areas? → `connect` them.
+3. Did I find something wrong or outdated in the graph? → `amend` it.
+4. Did `prime` return nothing at the start? → I'm in a discovery area and
+   MUST have something to record by now.
+If all four are "no," you're done. If any is "yes," record it before
+responding. This check is mandatory, not aspirational.
 
 BLOCK GRANULARITY:
 - A block should be one coherent idea — typically 1-5 paragraphs.
