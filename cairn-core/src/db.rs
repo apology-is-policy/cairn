@@ -77,8 +77,13 @@ impl CairnDb {
 
         if db_version < 2 {
             // v2: Add `locked` field to topic table.
+            // DEFINE FIELD sets the default for new records, but existing
+            // records keep NULL. Backfill explicitly.
             self.db
-                .query("DEFINE FIELD locked ON topic TYPE bool DEFAULT false")
+                .query(
+                    "DEFINE FIELD locked ON topic TYPE bool DEFAULT false;
+                     UPDATE topic SET locked = false WHERE locked = NONE;",
+                )
                 .await
                 .map_err(|e| CairnError::Db(format!("v2 migration failed: {e}")))?;
             self.set_schema_version(2).await?;

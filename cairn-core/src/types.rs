@@ -1,6 +1,13 @@
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::fmt;
+
+/// Deserialize a bool that might be null (SurrealDB returns NULL for
+/// fields that were added after the record was created, even with
+/// DEFAULT false on the schema definition).
+fn bool_or_null<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    Option::<bool>::deserialize(d).map(|v| v.unwrap_or(false))
+}
 
 // ── Core data types ──────────────────────────────────────────────
 
@@ -14,7 +21,7 @@ pub struct Topic {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub deprecated: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "bool_or_null")]
     pub locked: bool,
 }
 
