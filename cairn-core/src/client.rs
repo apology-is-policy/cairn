@@ -310,6 +310,20 @@ impl CairnClient {
         self.call(CairnRequest::BatchRewrite(params)).await
     }
 
+    pub async fn lock_topic(&self, key: &str) -> Result<()> {
+        self.call(CairnRequest::LockTopic {
+            key: key.to_string(),
+        })
+        .await
+    }
+
+    pub async fn unlock_topic(&self, key: &str) -> Result<()> {
+        self.call(CairnRequest::UnlockTopic {
+            key: key.to_string(),
+        })
+        .await
+    }
+
     pub async fn set_summary(&self, params: SetSummaryParams) -> Result<SetSummaryResult> {
         self.call(CairnRequest::SetSummary(params)).await
     }
@@ -525,6 +539,7 @@ fn reconstruct_error(resp: CairnResponse) -> CairnError {
         Some("invalid_edge_type") => CairnError::InvalidEdgeType(msg),
         Some("empty_content") => CairnError::EmptyContent(msg),
         Some("topic_key_conflict") => CairnError::TopicKeyConflict(msg),
+        Some("topic_locked") => CairnError::TopicLocked(msg),
         Some("db") => CairnError::Db(msg),
         Some("editor_busy") => {
             // Reconstruct from the structured payload if it's there.

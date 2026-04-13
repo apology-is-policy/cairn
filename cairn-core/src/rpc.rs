@@ -80,6 +80,10 @@ pub enum CairnRequest {
     DeleteBlock(DeleteBlockParams),
     MoveBlock(MoveBlockParams),
 
+    // Topic lock (v5)
+    LockTopic { key: String },
+    UnlockTopic { key: String },
+
     // Editor session control (v3)
     BeginEditorSession(BeginEditorSessionParams),
     EndEditorSession,
@@ -119,7 +123,9 @@ impl CairnRequest {
             | SetTags(_)
             | Disconnect(_)
             | DeleteBlock(_)
-            | MoveBlock(_) => true,
+            | MoveBlock(_)
+            | LockTopic { .. }
+            | UnlockTopic { .. } => true,
 
             // Reads: do not change graph state. `Snapshot` and `ExportJson`
             // produce files but never modify the live graph, so they're
@@ -211,6 +217,7 @@ fn classify(e: &CairnError) -> &'static str {
         InvalidEdgeType(_) => "invalid_edge_type",
         EmptyContent(_) => "empty_content",
         TopicKeyConflict(_) => "topic_key_conflict",
+        TopicLocked(_) => "topic_locked",
         SchemaVersionMismatch { .. } => "schema_version_mismatch",
         EditorBusy { .. } => "editor_busy",
         Io(_) => "io",

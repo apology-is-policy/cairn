@@ -73,6 +73,7 @@ struct TopicRow {
     created_at: chrono::DateTime<Utc>,
     updated_at: chrono::DateTime<Utc>,
     deprecated: bool,
+    locked: bool,
 }
 
 impl TopicRow {
@@ -88,6 +89,7 @@ impl TopicRow {
             created_at: self.created_at,
             updated_at: self.updated_at,
             deprecated: self.deprecated,
+            locked: self.locked,
         })
     }
 }
@@ -95,7 +97,7 @@ impl TopicRow {
 async fn get_topic(db: &CairnDb, key: &str) -> Result<Option<Topic>> {
     let mut res = db
         .db
-        .query("SELECT key, title, summary, blocks, tags, created_at, updated_at, deprecated FROM topic WHERE key = $key LIMIT 1")
+        .query("SELECT key, title, summary, blocks, tags, created_at, updated_at, deprecated, locked FROM topic WHERE key = $key LIMIT 1")
         .bind(("key", key.to_string()))
         .await
         .map_err(|e| CairnError::Db(e.to_string()))?;
@@ -136,6 +138,7 @@ pub async fn learn(db: &CairnDb, params: LearnParams) -> Result<LearnResult> {
     let block_id = block.id.clone();
 
     if let Some(mut topic) = get_topic(db, &params.topic_key).await? {
+        check_not_locked(&topic)?;
         // Existing topic — insert block at the requested position
         match params.position {
             Position::Start => topic.blocks.insert(0, block),
@@ -349,6 +352,7 @@ pub async fn amend(db: &CairnDb, params: AmendParams) -> Result<AmendResult> {
     let mut topic = get_topic(db, &params.topic_key)
         .await?
         .ok_or_else(|| CairnError::TopicNotFound(params.topic_key.clone()))?;
+    check_not_locked(&topic)?;
 
     let block = topic
         .blocks
@@ -432,6 +436,7 @@ pub async fn rewrite(db: &CairnDb, params: RewriteParams) -> Result<RewriteResul
     let topic = get_topic(db, &params.topic_key)
         .await?
         .ok_or_else(|| CairnError::TopicNotFound(params.topic_key.clone()))?;
+    check_not_locked(&topic)?;
 
     let old_block_count = topic.blocks.len();
     let old_blocks_json =
@@ -618,13 +623,69 @@ pub async fn get_topic_by_key(db: &CairnDb, key: &str) -> Result<Option<Topic>> 
     get_topic(db, key).await
 }
 
-// ── New ops (v4) ─────────────────────────────────────────────────
+/// Check if a topic is locked. Returns Ok(()) if not locked, Err(TopicLocked) if locked.
+fn check_not_locked(topic: &Topic) -> Result<()> {
+    if topic.locked {
+        Err(CairnError::TopicLocked(topic.key.clone()))
+    } else {
+        Ok(())
+    }
+}
+
+/// Lock a topic — makes it read-only for content mutations.
+pub async fn lock_topic(db: &CairnDb, topic_key: &str) -> Result<()> {
+    let _topic = get_topic(db, topic_key)
+        .await?
+        .ok_or_else(|| CairnError::TopicNotFound(topic_key.into()))?;
+
+    db.db
+        .query("UPDATE topic SET locked = true, updated_at = time::now() WHERE key = $key")
+        .bind(("key", topic_key.to_string()))
+        .await
+        .map_err(|e| CairnError::Db(e.to_string()))?;
+
+    write_history(
+        db,
+        "lock",
+        &format!("topic:{topic_key}"),
+        "locked by user",
+        None,
+    )
+    .await?;
+    Ok(())
+}
+
+/// Unlock a topic — makes it editable again.
+pub async fn unlock_topic(db: &CairnDb, topic_key: &str) -> Result<()> {
+    let _topic = get_topic(db, topic_key)
+        .await?
+        .ok_or_else(|| CairnError::TopicNotFound(topic_key.into()))?;
+
+    db.db
+        .query("UPDATE topic SET locked = false, updated_at = time::now() WHERE key = $key")
+        .bind(("key", topic_key.to_string()))
+        .await
+        .map_err(|e| CairnError::Db(e.to_string()))?;
+
+    write_history(
+        db,
+        "unlock",
+        &format!("topic:{topic_key}"),
+        "unlocked by user",
+        None,
+    )
+    .await?;
+    Ok(())
+}
+
+// ── New ops (v4) ────────────────��────────────────────────────────
 
 /// Replace a topic's tags wholesale.
 pub async fn set_tags(db: &CairnDb, params: SetTagsParams) -> Result<SetTagsResult> {
     let _topic = get_topic(db, &params.topic_key)
         .await?
         .ok_or_else(|| CairnError::TopicNotFound(params.topic_key.clone()))?;
+    check_not_locked(&_topic)?;
 
     db.db
         .query(
@@ -658,6 +719,7 @@ pub async fn set_summary(db: &CairnDb, params: SetSummaryParams) -> Result<SetSu
     let _topic = get_topic(db, &params.topic_key)
         .await?
         .ok_or_else(|| CairnError::TopicNotFound(params.topic_key.clone()))?;
+    check_not_locked(&_topic)?;
 
     db.db
         .query(
@@ -741,6 +803,7 @@ pub async fn delete_block(db: &CairnDb, params: DeleteBlockParams) -> Result<Del
     let mut topic = get_topic(db, &params.topic_key)
         .await?
         .ok_or_else(|| CairnError::TopicNotFound(params.topic_key.clone()))?;
+    check_not_locked(&topic)?;
 
     let idx = topic
         .blocks
@@ -831,6 +894,7 @@ pub async fn move_block(db: &CairnDb, params: MoveBlockParams) -> Result<MoveBlo
     let mut topic = get_topic(db, &params.topic_key)
         .await?
         .ok_or_else(|| CairnError::TopicNotFound(params.topic_key.clone()))?;
+    check_not_locked(&topic)?;
 
     // Find and remove the block from its current position.
     let idx = topic
@@ -1930,5 +1994,230 @@ mod tests {
         // The successful one still landed.
         let topic = get_topic(&db, "exists").await.unwrap().unwrap();
         assert_eq!(topic.blocks[0].content, "new");
+    }
+
+    // ── Topic lock tests ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_lock_blocks_learn() {
+        let db = test_db().await;
+        learn(
+            &db,
+            LearnParams {
+                topic_key: "locked-topic".into(),
+                title: Some("Locked".into()),
+                summary: None,
+                content: "curated content".into(),
+                voice: None,
+                tags: vec![],
+                position: Position::End,
+                extra_blocks: vec![],
+            },
+        )
+        .await
+        .unwrap();
+
+        lock_topic(&db, "locked-topic").await.unwrap();
+
+        // Learn (append) should be rejected.
+        let err = learn(
+            &db,
+            LearnParams {
+                topic_key: "locked-topic".into(),
+                title: None,
+                summary: None,
+                content: "should be rejected".into(),
+                voice: None,
+                tags: vec![],
+                position: Position::End,
+                extra_blocks: vec![],
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, CairnError::TopicLocked(_)));
+
+        // Content unchanged.
+        let topic = get_topic(&db, "locked-topic").await.unwrap().unwrap();
+        assert_eq!(topic.blocks.len(), 1);
+        assert_eq!(topic.blocks[0].content, "curated content");
+    }
+
+    #[tokio::test]
+    async fn test_lock_blocks_amend_and_rewrite() {
+        let db = test_db().await;
+        learn(
+            &db,
+            LearnParams {
+                topic_key: "lt".into(),
+                title: Some("T".into()),
+                summary: None,
+                content: "original".into(),
+                voice: None,
+                tags: vec![],
+                position: Position::End,
+                extra_blocks: vec![],
+            },
+        )
+        .await
+        .unwrap();
+        let block_id = get_topic(&db, "lt").await.unwrap().unwrap().blocks[0]
+            .id
+            .clone();
+
+        lock_topic(&db, "lt").await.unwrap();
+
+        // Amend blocked.
+        let err = amend(
+            &db,
+            AmendParams {
+                topic_key: "lt".into(),
+                block_id: block_id.clone(),
+                new_content: "changed".into(),
+                reason: "test".into(),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, CairnError::TopicLocked(_)));
+
+        // Rewrite blocked.
+        let err = rewrite(
+            &db,
+            RewriteParams {
+                topic_key: "lt".into(),
+                new_blocks: vec![NewBlock {
+                    content: "replaced".into(),
+                    voice: None,
+                }],
+                reason: "test".into(),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, CairnError::TopicLocked(_)));
+    }
+
+    #[tokio::test]
+    async fn test_lock_allows_connect_and_forget() {
+        let db = test_db().await;
+        learn(
+            &db,
+            LearnParams {
+                topic_key: "la".into(),
+                title: Some("A".into()),
+                summary: None,
+                content: "a".into(),
+                voice: None,
+                tags: vec![],
+                position: Position::End,
+                extra_blocks: vec![],
+            },
+        )
+        .await
+        .unwrap();
+        learn(
+            &db,
+            LearnParams {
+                topic_key: "lb".into(),
+                title: Some("B".into()),
+                summary: None,
+                content: "b".into(),
+                voice: None,
+                tags: vec![],
+                position: Position::End,
+                extra_blocks: vec![],
+            },
+        )
+        .await
+        .unwrap();
+
+        lock_topic(&db, "la").await.unwrap();
+
+        // Connect should still work (edges don't modify topic content).
+        connect(
+            &db,
+            ConnectParams {
+                from_key: "la".into(),
+                to_key: "lb".into(),
+                edge_type: EdgeKind::SeeAlso,
+                note: "test".into(),
+                severity: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        // Forget should still work (you might deprecate a locked topic).
+        forget(
+            &db,
+            ForgetParams {
+                topic_key: "la".into(),
+                reason: "no longer relevant".into(),
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_unlock_restores_mutability() {
+        let db = test_db().await;
+        learn(
+            &db,
+            LearnParams {
+                topic_key: "ul".into(),
+                title: Some("T".into()),
+                summary: None,
+                content: "original".into(),
+                voice: None,
+                tags: vec![],
+                position: Position::End,
+                extra_blocks: vec![],
+            },
+        )
+        .await
+        .unwrap();
+
+        lock_topic(&db, "ul").await.unwrap();
+
+        // Locked — learn rejected.
+        assert!(learn(
+            &db,
+            LearnParams {
+                topic_key: "ul".into(),
+                title: None,
+                summary: None,
+                content: "blocked".into(),
+                voice: None,
+                tags: vec![],
+                position: Position::End,
+                extra_blocks: vec![],
+            },
+        )
+        .await
+        .is_err());
+
+        unlock_topic(&db, "ul").await.unwrap();
+
+        // Unlocked — learn succeeds.
+        learn(
+            &db,
+            LearnParams {
+                topic_key: "ul".into(),
+                title: None,
+                summary: None,
+                content: "now allowed".into(),
+                voice: None,
+                tags: vec![],
+                position: Position::End,
+                extra_blocks: vec![],
+            },
+        )
+        .await
+        .unwrap();
+
+        let topic = get_topic(&db, "ul").await.unwrap().unwrap();
+        assert_eq!(topic.blocks.len(), 2);
     }
 }

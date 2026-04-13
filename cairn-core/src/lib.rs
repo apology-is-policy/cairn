@@ -114,6 +114,14 @@ impl Cairn {
         ops::batch_rewrite(&self.db, params).await
     }
 
+    pub async fn lock_topic(&self, key: &str) -> Result<()> {
+        ops::lock_topic(&self.db, key).await
+    }
+
+    pub async fn unlock_topic(&self, key: &str) -> Result<()> {
+        ops::unlock_topic(&self.db, key).await
+    }
+
     pub async fn set_summary(&self, params: SetSummaryParams) -> Result<SetSummaryResult> {
         ops::set_summary(&self.db, params).await
     }

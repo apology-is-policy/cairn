@@ -390,6 +390,14 @@ pub async fn prime(db: &CairnDb, params: PrimeParams) -> Result<PrimeResult> {
         let topic = crate::ops::get_topic_by_key(db, &item.topic_key).await?;
 
         let mut section = format!("## {}\n\n", item.title);
+
+        // Flag locked topics so the agent knows not to modify them.
+        if let Some(ref t) = topic {
+            if t.locked {
+                section.push_str("🔒 **LOCKED** — This topic has been curated by the user. Do not modify, amend, rewrite, or append to it. Treat its content as authoritative.\n\n");
+            }
+        }
+
         if !item.summary.is_empty() {
             section.push_str(&item.summary);
             section.push('\n');

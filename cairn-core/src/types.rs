@@ -14,6 +14,8 @@ pub struct Topic {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub deprecated: bool,
+    #[serde(default)]
+    pub locked: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

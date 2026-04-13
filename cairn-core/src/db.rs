@@ -9,7 +9,7 @@ const SCHEMA: &str = include_str!("schema.surql");
 
 /// The schema version this binary knows how to handle.
 /// Bump when adding migrations.
-pub const CURRENT_SCHEMA_VERSION: i64 = 1;
+pub const CURRENT_SCHEMA_VERSION: i64 = 2;
 
 pub struct CairnDb {
     pub(crate) db: Surreal<Db>,
@@ -75,7 +75,14 @@ impl CairnDb {
             self.set_schema_version(1).await?;
         }
 
-        // Future migrations: add `if db_version < 2 { ... }` blocks here.
+        if db_version < 2 {
+            // v2: Add `locked` field to topic table.
+            self.db
+                .query("DEFINE FIELD locked ON topic TYPE bool DEFAULT false")
+                .await
+                .map_err(|e| CairnError::Db(format!("v2 migration failed: {e}")))?;
+            self.set_schema_version(2).await?;
+        }
 
         Ok(())
     }
@@ -125,7 +132,7 @@ mod tests {
     async fn test_schema_version() {
         let db = CairnDb::open_memory().await.unwrap();
         let version = db.get_schema_version().await.unwrap();
-        assert_eq!(version, 1);
+        assert_eq!(version, CURRENT_SCHEMA_VERSION);
     }
 
     #[tokio::test]
@@ -144,6 +151,6 @@ mod tests {
         // Running migrations again should be a no-op
         db.run_migrations().await.unwrap();
         let version = db.get_schema_version().await.unwrap();
-        assert_eq!(version, 1);
+        assert_eq!(version, CURRENT_SCHEMA_VERSION);
     }
 }

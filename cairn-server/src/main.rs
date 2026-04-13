@@ -436,6 +436,14 @@ async fn dispatch(state: &mut DaemonState, conn_id: u64, req: CairnRequest) -> C
             .map(|(t, e)| serde_json::json!([t, e])),
         ListSnapshots => cairn.list_snapshots().map(|v| serde_json::json!(v)),
 
+        LockTopic { key } => cairn
+            .lock_topic(&key)
+            .await
+            .map(|_| serde_json::Value::Null),
+        UnlockTopic { key } => cairn
+            .unlock_topic(&key)
+            .await
+            .map(|_| serde_json::Value::Null),
         BatchRewrite(p) => to_val(cairn.batch_rewrite(p).await),
         SetSummary(p) => to_val(cairn.set_summary(p).await),
         SetTags(p) => to_val(cairn.set_tags(p).await),

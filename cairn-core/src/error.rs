@@ -27,6 +27,9 @@ pub enum CairnError {
     #[error("Schema version mismatch: database is at v{db}, binary supports v{binary}. Update the binary to a newer version.")]
     SchemaVersionMismatch { db: i64, binary: i64 },
 
+    #[error("Topic is locked: {0}. This topic has been curated by the user and is read-only. Use `unlock` to make it editable again.")]
+    TopicLocked(String),
+
     /// A mutation was attempted while another client holds an exclusive
     /// editor session on the daemon. Reads (`prime`, `search`, `stats`,
     /// `graph_status`, …) bypass the lock and stay available.
