@@ -91,6 +91,7 @@ async fn two_clients_interleave_safely() {
         voice: None,
         tags: vec!["a".into()],
         position: Position::End,
+        extra_blocks: vec![],
     })
     .await
     .unwrap();
@@ -103,6 +104,7 @@ async fn two_clients_interleave_safely() {
         voice: None,
         tags: vec!["b".into()],
         position: Position::End,
+        extra_blocks: vec![],
     })
     .await
     .unwrap();
@@ -153,6 +155,7 @@ async fn many_concurrent_writes_serialize_safely() {
                 voice: None,
                 tags: vec![],
                 position: Position::End,
+                extra_blocks: vec![],
             })
             .await
         }));
@@ -202,6 +205,7 @@ async fn rename_through_daemon() {
         voice: None,
         tags: vec![],
         position: Position::End,
+        extra_blocks: vec![],
     })
     .await
     .unwrap();
@@ -261,6 +265,7 @@ async fn editor_session_blocks_other_clients_mutations_but_not_reads() {
             voice: None,
             tags: vec![],
             position: Position::End,
+            extra_blocks: vec![],
         })
         .await
         .unwrap();
@@ -302,6 +307,7 @@ async fn editor_session_blocks_other_clients_mutations_but_not_reads() {
             voice: None,
             tags: vec![],
             position: Position::End,
+            extra_blocks: vec![],
         })
         .await
         .unwrap_err();
@@ -322,6 +328,7 @@ async fn editor_session_blocks_other_clients_mutations_but_not_reads() {
             voice: None,
             tags: vec![],
             position: Position::End,
+            extra_blocks: vec![],
         })
         .await
         .unwrap();
@@ -339,6 +346,7 @@ async fn editor_session_blocks_other_clients_mutations_but_not_reads() {
             voice: None,
             tags: vec![],
             position: Position::End,
+            extra_blocks: vec![],
         })
         .await
         .unwrap();
@@ -399,6 +407,7 @@ async fn editor_lock_release_on_connection_drop() {
             voice: None,
             tags: vec![],
             position: Position::End,
+            extra_blocks: vec![],
         })
         .await
         .unwrap();
@@ -504,6 +513,7 @@ async fn client_reconnects_after_daemon_restart() {
         voice: None,
         tags: vec![],
         position: Position::End,
+        extra_blocks: vec![],
     })
     .await
     .unwrap();

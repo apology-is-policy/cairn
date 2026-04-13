@@ -152,6 +152,13 @@ pub async fn learn(db: &CairnDb, params: LearnParams) -> Result<LearnResult> {
             }
         }
 
+        // Append any extra blocks after the primary.
+        for eb in &params.extra_blocks {
+            topic
+                .blocks
+                .push(make_block(&eb.content, eb.voice.as_deref()));
+        }
+
         let blocks_json =
             serde_json::to_string(&topic.blocks).map_err(|e| CairnError::Db(e.to_string()))?;
         let block_count = topic.blocks.len();
@@ -211,8 +218,15 @@ pub async fn learn(db: &CairnDb, params: LearnParams) -> Result<LearnResult> {
         let summary = params
             .summary
             .unwrap_or_else(|| auto_summary(&params.content, 200));
+
+        // Build the full block list: primary + extra.
+        let mut all_blocks = vec![block];
+        for eb in &params.extra_blocks {
+            all_blocks.push(make_block(&eb.content, eb.voice.as_deref()));
+        }
+        let block_count = all_blocks.len();
         let blocks_json =
-            serde_json::to_string(&[&block]).map_err(|e| CairnError::Db(e.to_string()))?;
+            serde_json::to_string(&all_blocks).map_err(|e| CairnError::Db(e.to_string()))?;
 
         db.db
             .query(
@@ -238,7 +252,10 @@ pub async fn learn(db: &CairnDb, params: LearnParams) -> Result<LearnResult> {
             db,
             "learn",
             &format!("topic:{}", params.topic_key),
-            &format!("Created topic with block {block_id}"),
+            &format!(
+                "Created topic with {} block(s), first: {block_id}",
+                block_count
+            ),
             None,
         )
         .await?;
@@ -247,7 +264,7 @@ pub async fn learn(db: &CairnDb, params: LearnParams) -> Result<LearnResult> {
             topic_key: params.topic_key,
             block_id,
             action: "created".into(),
-            topic_block_count: 1,
+            topic_block_count: block_count,
         })
     }
 }
@@ -765,6 +782,50 @@ pub async fn delete_block(db: &CairnDb, params: DeleteBlockParams) -> Result<Del
     })
 }
 
+/// Rewrite multiple topics in a single call. Each entry is processed
+/// sequentially under the same lock, so it's atomic from other clients'
+/// perspective. Errors on individual entries don't abort the batch —
+/// they're collected in the results.
+pub async fn batch_rewrite(db: &CairnDb, params: BatchRewriteParams) -> Result<BatchRewriteResult> {
+    let mut results = Vec::new();
+    let mut succeeded = 0;
+
+    for entry in params.entries {
+        let r = rewrite(
+            db,
+            RewriteParams {
+                topic_key: entry.topic_key,
+                new_blocks: entry.new_blocks,
+                reason: entry.reason,
+            },
+        )
+        .await;
+        match r {
+            Ok(result) => {
+                succeeded += 1;
+                results.push(result);
+            }
+            Err(e) => {
+                // Record the failure as a RewriteResult with action="error".
+                results.push(RewriteResult {
+                    topic_key: "".into(),
+                    action: format!("error: {e}"),
+                    old_block_count: 0,
+                    new_block_count: 0,
+                    reason: e.to_string(),
+                });
+            }
+        }
+    }
+
+    let total = results.len();
+    Ok(BatchRewriteResult {
+        results,
+        total,
+        succeeded,
+    })
+}
+
 /// Move a block to a new position within its topic.
 pub async fn move_block(db: &CairnDb, params: MoveBlockParams) -> Result<MoveBlockResult> {
     let mut topic = get_topic(db, &params.topic_key)
@@ -851,6 +912,7 @@ mod tests {
                 voice: Some("frustrated".into()),
                 tags: vec!["billing".into(), "retry".into()],
                 position: Position::End,
+                extra_blocks: vec![],
             },
         )
         .await
@@ -880,6 +942,7 @@ mod tests {
                 voice: None,
                 tags: vec![],
                 position: Position::End,
+                extra_blocks: vec![],
             },
         )
         .await
@@ -895,6 +958,7 @@ mod tests {
                 voice: None,
                 tags: vec!["new-tag".into()],
                 position: Position::End,
+                extra_blocks: vec![],
             },
         )
         .await
@@ -924,6 +988,7 @@ mod tests {
                 voice: None,
                 tags: vec![],
                 position: Position::End,
+                extra_blocks: vec![],
             },
         )
         .await
@@ -939,6 +1004,7 @@ mod tests {
                 voice: None,
                 tags: vec![],
                 position: Position::Start,
+                extra_blocks: vec![],
             },
         )
         .await
@@ -965,6 +1031,7 @@ mod tests {
                     voice: None,
                     tags: vec![],
                     position: Position::End,
+                    extra_blocks: vec![],
                 },
             )
             .await
@@ -1003,6 +1070,7 @@ mod tests {
                     voice: None,
                     tags: vec![],
                     position: Position::End,
+                    extra_blocks: vec![],
                 },
             )
             .await
@@ -1052,6 +1120,7 @@ mod tests {
                 voice: None,
                 tags: vec![],
                 position: Position::End,
+                extra_blocks: vec![],
             },
         )
         .await
@@ -1087,6 +1156,7 @@ mod tests {
                 voice: None,
                 tags: vec![],
                 position: Position::End,
+                extra_blocks: vec![],
             },
         )
         .await
@@ -1124,6 +1194,7 @@ mod tests {
                 voice: None,
                 tags: vec![],
                 position: Position::End,
+                extra_blocks: vec![],
             },
         )
         .await
@@ -1159,6 +1230,7 @@ mod tests {
                 voice: None,
                 tags: vec![],
                 position: Position::End,
+                extra_blocks: vec![],
             },
         )
         .await
@@ -1174,6 +1246,7 @@ mod tests {
                 voice: None,
                 tags: vec![],
                 position: Position::End,
+                extra_blocks: vec![],
             },
         )
         .await
@@ -1215,6 +1288,7 @@ mod tests {
                 voice: None,
                 tags: vec![],
                 position: Position::End,
+                extra_blocks: vec![],
             },
         )
         .await
@@ -1267,6 +1341,7 @@ mod tests {
                 voice: None,
                 tags: vec![],
                 position: Position::End,
+                extra_blocks: vec![],
             },
         )
         .await
@@ -1285,6 +1360,7 @@ mod tests {
                 voice: None,
                 tags: vec![],
                 position: Position::End,
+                extra_blocks: vec![],
             },
         )
         .await
@@ -1307,6 +1383,7 @@ mod tests {
                 voice: None,
                 tags: vec![],
                 position: Position::End,
+                extra_blocks: vec![],
             },
         )
         .await
@@ -1331,6 +1408,7 @@ mod tests {
                 voice: None,
                 tags: vec![],
                 position: Position::End,
+                extra_blocks: vec![],
             },
         )
         .await
@@ -1354,6 +1432,7 @@ mod tests {
                 voice: None,
                 tags: vec![],
                 position: Position::End,
+                extra_blocks: vec![],
             },
         )
         .await
@@ -1370,6 +1449,7 @@ mod tests {
                 voice: None,
                 tags: vec![],
                 position: Position::End,
+                extra_blocks: vec![],
             },
         )
         .await
@@ -1393,6 +1473,7 @@ mod tests {
                 voice: None,
                 tags: vec![],
                 position: Position::End,
+                extra_blocks: vec![],
             },
         )
         .await
@@ -1409,6 +1490,7 @@ mod tests {
                 voice: None,
                 tags: vec![],
                 position: Position::End,
+                extra_blocks: vec![],
             },
         )
         .await
@@ -1432,6 +1514,7 @@ mod tests {
                 voice: None,
                 tags: vec![],
                 position: Position::End,
+                extra_blocks: vec![],
             },
         )
         .await
@@ -1490,6 +1573,7 @@ mod tests {
                     voice: None,
                     tags: vec![],
                     position: Position::End,
+                    extra_blocks: vec![],
                 },
             )
             .await
@@ -1524,6 +1608,7 @@ mod tests {
                     voice: None,
                     tags: vec![],
                     position: Position::End,
+                    extra_blocks: vec![],
                 },
             )
             .await

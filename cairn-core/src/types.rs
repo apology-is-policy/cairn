@@ -167,6 +167,12 @@ pub struct LearnParams {
     pub voice: Option<String>,
     pub tags: Vec<String>,
     pub position: Position,
+    /// Additional blocks to append after the primary content block.
+    /// Enables creating multi-block topics in a single `learn` call.
+    /// Each block gets its own ID and optional voice annotation.
+    /// Backward-compatible: defaults to empty (single-block behavior).
+    #[serde(default)]
+    pub extra_blocks: Vec<NewBlock>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -298,6 +304,27 @@ pub struct RenameParams {
 pub struct SetTagsParams {
     pub topic_key: String,
     pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BatchRewriteParams {
+    pub entries: Vec<BatchRewriteEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BatchRewriteEntry {
+    pub topic_key: String,
+    pub new_blocks: Vec<NewBlock>,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchRewriteResult {
+    pub results: Vec<RewriteResult>,
+    pub total: usize,
+    pub succeeded: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -633,6 +660,7 @@ mod tests {
             voice: Some("calm".into()),
             tags: vec!["a".into(), "b".into()],
             position: Position::After("b_1".into()),
+            extra_blocks: vec![],
         });
     }
 

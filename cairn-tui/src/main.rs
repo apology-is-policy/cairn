@@ -2726,6 +2726,7 @@ async fn dispatch_text_save(
                     voice: None,
                     tags: vec![],
                     position: cairn_core::Position::End,
+                    extra_blocks: vec![],
                 })
                 .await
             {
@@ -2752,6 +2753,7 @@ async fn dispatch_text_save(
                         voice: None,
                         tags: vec![],
                         position: cairn_core::Position::End,
+                        extra_blocks: vec![],
                     })
                     .await
                 {

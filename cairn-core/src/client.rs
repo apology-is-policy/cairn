@@ -306,6 +306,10 @@ impl CairnClient {
 
     // ── New ops (v4) ──────────────────────────────────────────────
 
+    pub async fn batch_rewrite(&self, params: BatchRewriteParams) -> Result<BatchRewriteResult> {
+        self.call(CairnRequest::BatchRewrite(params)).await
+    }
+
     pub async fn set_summary(&self, params: SetSummaryParams) -> Result<SetSummaryResult> {
         self.call(CairnRequest::SetSummary(params)).await
     }

@@ -491,6 +491,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                                 voice: None,
                                 tags: vec!["taxonomy".into()],
                                 position: Position::End,
+                                extra_blocks: vec![],
                             })
                             .await?;
                         println!("  Created topic: {key}");
@@ -542,6 +543,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             voice,
             tag,
             position,
+            ..
         } => {
             let result = cairn
                 .learn(LearnParams {
@@ -552,6 +554,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                     voice,
                     tags: tag,
                     position: parse_position(&position),
+                    extra_blocks: vec![],
                 })
                 .await?;
             output!(

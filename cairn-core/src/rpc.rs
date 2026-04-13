@@ -72,7 +72,8 @@ pub enum CairnRequest {
     ImportJson { json: String },
     ListSnapshots,
 
-    // New ops (v4)
+    // New ops (v4+)
+    BatchRewrite(BatchRewriteParams),
     SetSummary(SetSummaryParams),
     SetTags(SetTagsParams),
     Disconnect(DisconnectParams),
@@ -113,6 +114,7 @@ impl CairnRequest {
             | SetPreferences { .. }
             | Restore(_)
             | ImportJson { .. }
+            | BatchRewrite(_)
             | SetSummary(_)
             | SetTags(_)
             | Disconnect(_)
@@ -254,6 +256,7 @@ mod tests {
             voice: None,
             tags: vec![],
             position: Position::End,
+            extra_blocks: vec![],
         }));
         round_trip(CairnRequest::Connect(ConnectParams {
             from_key: "a".into(),
@@ -395,6 +398,7 @@ mod tests {
             voice: None,
             tags: vec![],
             position: Position::End,
+            extra_blocks: vec![],
         })
         .is_mutation());
         assert!(CairnRequest::Reset.is_mutation());

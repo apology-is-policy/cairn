@@ -339,6 +339,7 @@ impl CairnMcpServer {
                 voice: req.voice,
                 tags: req.tags.unwrap_or_default(),
                 position: parse_position(req.position.as_deref()),
+                extra_blocks: vec![],
             })
             .await
             .map_err(cairn_err)?;

@@ -110,6 +110,10 @@ impl Cairn {
         ops::rename(&self.db, params).await
     }
 
+    pub async fn batch_rewrite(&self, params: BatchRewriteParams) -> Result<BatchRewriteResult> {
+        ops::batch_rewrite(&self.db, params).await
+    }
+
     pub async fn set_summary(&self, params: SetSummaryParams) -> Result<SetSummaryResult> {
         ops::set_summary(&self.db, params).await
     }

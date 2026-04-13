@@ -720,6 +720,7 @@ mod tests {
                     voice: None,
                     tags: vec![],
                     position: Position::End,
+                    extra_blocks: vec![],
                 },
             )
             .await
@@ -915,6 +916,7 @@ mod tests {
                 voice: None,
                 tags: vec![],
                 position: Position::End,
+                extra_blocks: vec![],
             },
         )
         .await

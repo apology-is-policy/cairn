@@ -88,6 +88,17 @@ decisions from prior sessions that should inform your current approach. If
 search returns nothing relevant, proceed with your recommendation but note
 the gap.
 
+BLOCK GRANULARITY:
+- A block should be one coherent idea — typically 1-5 paragraphs.
+- If a block exceeds ~500 words, consider splitting into multiple blocks with
+  distinct concerns.
+- If a topic has more than 10 blocks, consider splitting into sub-topics.
+- When creating a new topic with rich content, use `learn` with `extra_blocks`
+  to create a well-structured multi-block topic in a single call, rather than
+  making multiple `learn` calls to append blocks one by one.
+- When rewriting multiple topics at once (e.g., during a research or cataloguing
+  session), use `batch_rewrite` to process them all in a single RPC call.
+
 DO NOT LOG:
 - Individual file imports, obvious type signatures, or boilerplate
 - Things already captured in the graph (call `search` first to check)
