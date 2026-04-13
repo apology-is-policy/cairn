@@ -189,10 +189,57 @@ pub async fn search(db: &CairnDb, params: SearchParams) -> Result<SearchResult> 
         .map_err(|e| CairnError::Db(e.to_string()))?;
 
     let rows: Vec<FtsRow> = res.take(0).map_err(|e| CairnError::Db(e.to_string()))?;
-    let total_matches = rows.len();
+
+    // Fallback: if FTS returned few results, also match on topic keys.
+    // This catches cases like searching "calc-engine-core" when the topic
+    // key is "analytics/batch/calc-engine-core" but the FTS index only
+    // covers title and summary (which may be skeletal).
+    let mut all_rows = rows;
+    if all_rows.len() < params.limit {
+        let keywords: Vec<&str> = params
+            .query
+            .split_whitespace()
+            .filter(|w| w.len() >= 3)
+            .collect();
+        if !keywords.is_empty() {
+            let existing_keys: HashSet<String> = all_rows.iter().map(|r| r.key.clone()).collect();
+            let mut key_res = db
+                .db
+                .query("SELECT key, title, summary FROM topic WHERE deprecated = false")
+                .await
+                .map_err(|e| CairnError::Db(e.to_string()))?;
+            let all_topics: Vec<FtsRow> = key_res
+                .take::<Vec<TopicSummaryRow>>(0)
+                .map_err(|e| CairnError::Db(e.to_string()))?
+                .into_iter()
+                .map(|r| FtsRow {
+                    key: r.key,
+                    title: r.title,
+                    summary: r.summary,
+                    score: 0.1, // Low score so FTS matches rank higher.
+                })
+                .collect();
+            for topic in all_topics {
+                if existing_keys.contains(&topic.key) {
+                    continue;
+                }
+                let key_lower = topic.key.to_lowercase();
+                let title_lower = topic.title.to_lowercase();
+                let matches = keywords.iter().any(|kw| {
+                    key_lower.contains(&kw.to_lowercase())
+                        || title_lower.contains(&kw.to_lowercase())
+                });
+                if matches {
+                    all_rows.push(topic);
+                }
+            }
+        }
+    }
+
+    let total_matches = all_rows.len();
 
     let mut results = Vec::new();
-    for row in &rows {
+    for row in &all_rows {
         let neighbors = if params.expand {
             // Fetch 1-hop neighbors
             let edges = edges_for_topics(db, std::slice::from_ref(&row.key)).await?;

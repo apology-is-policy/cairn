@@ -78,6 +78,10 @@ pub struct LearnRequest {
     pub tags: Option<Vec<String>>,
     /// Position: "start", "end", or "after:<block_id>"
     pub position: Option<String>,
+    /// Additional blocks to append after the primary content block.
+    /// Enables creating structured multi-block topics in a single call.
+    #[serde(default)]
+    pub extra_blocks: Option<Vec<NewBlockRequest>>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -117,6 +121,13 @@ pub struct SearchRequest {
     pub expand: Option<bool>,
     /// Max topics to return (default: 10)
     pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReadRequest {
+    /// Topic key to read
+    pub topic_key: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -308,7 +319,9 @@ impl CairnMcpServer {
         to_json_content(&result)
     }
 
-    #[tool(description = "Compose relevant context for a task. Call at the start of every task.")]
+    #[tool(
+        description = "Compose relevant context for a task. Call at the start of every task. Returns a pre-flight briefing (constraints, impact radius, war stories, contradictions, stale areas) plus matching topic content."
+    )]
     async fn prime(
         &self,
         Parameters(req): Parameters<PrimeRequest>,
@@ -324,7 +337,9 @@ impl CairnMcpServer {
         to_json_content(&result)
     }
 
-    #[tool(description = "Record a new insight or extend an existing topic.")]
+    #[tool(
+        description = "Record a new insight or extend an existing topic. Creates the topic if it doesn't exist. Use extra_blocks to create structured multi-block topics in a single call."
+    )]
     async fn learn(
         &self,
         Parameters(req): Parameters<LearnRequest>,
@@ -339,7 +354,15 @@ impl CairnMcpServer {
                 voice: req.voice,
                 tags: req.tags.unwrap_or_default(),
                 position: parse_position(req.position.as_deref()),
-                extra_blocks: vec![],
+                extra_blocks: req
+                    .extra_blocks
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|b| cairn_core::NewBlock {
+                        content: b.content,
+                        voice: b.voice,
+                    })
+                    .collect(),
             })
             .await
             .map_err(cairn_err)?;
@@ -384,7 +407,9 @@ impl CairnMcpServer {
         to_json_content(&result)
     }
 
-    #[tool(description = "Full-text search across all topic content.")]
+    #[tool(
+        description = "Full-text search across topics. Searches title, summary (BM25), and falls back to fuzzy topic-key matching when FTS returns few results."
+    )]
     async fn search(
         &self,
         Parameters(req): Parameters<SearchRequest>,
@@ -423,6 +448,21 @@ impl CairnMcpServer {
             .await
             .map_err(cairn_err)?;
         to_json_content(&result)
+    }
+
+    #[tool(
+        description = "Read the full content of a topic by key. Returns all blocks, tags, timestamps, and metadata. Use this to inspect a topic's complete content before deciding between learn (append) vs rewrite (replace)."
+    )]
+    async fn read(
+        &self,
+        Parameters(req): Parameters<ReadRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let topic = self
+            .cairn
+            .get_topic(&req.topic_key)
+            .await
+            .map_err(cairn_err)?;
+        to_json_content(&topic)
     }
 
     #[tool(description = "Find how two topics are connected through the graph.")]
