@@ -79,9 +79,12 @@ pub struct LearnRequest {
     /// Position: "start", "end", or "after:<block_id>"
     pub position: Option<String>,
     /// Additional blocks to append after the primary content block.
-    /// Enables creating structured multi-block topics in a single call.
     #[serde(default)]
     pub extra_blocks: Option<Vec<NewBlockRequest>>,
+    /// Topic tier: "atlas" (default), "journal", or "notes".
+    /// Only used when creating a new topic.
+    #[serde(default)]
+    pub tier: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -381,6 +384,7 @@ impl CairnMcpServer {
                         voice: b.voice,
                     })
                     .collect(),
+                tier: req.tier.map(|t| cairn_core::TopicTier::from_str_loose(&t)),
             })
             .await
             .map_err(cairn_err)?;

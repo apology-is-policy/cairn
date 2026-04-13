@@ -80,7 +80,8 @@ pub enum CairnRequest {
     DeleteBlock(DeleteBlockParams),
     MoveBlock(MoveBlockParams),
 
-    // Topic lock (v5)
+    // Topic tier + lock (v5)
+    SetTier { key: String, tier: String },
     LockTopic { key: String },
     UnlockTopic { key: String },
 
@@ -124,6 +125,7 @@ impl CairnRequest {
             | Disconnect(_)
             | DeleteBlock(_)
             | MoveBlock(_)
+            | SetTier { .. }
             | LockTopic { .. }
             | UnlockTopic { .. } => true,
 
@@ -264,6 +266,7 @@ mod tests {
             tags: vec![],
             position: Position::End,
             extra_blocks: vec![],
+            tier: None,
         }));
         round_trip(CairnRequest::Connect(ConnectParams {
             from_key: "a".into(),
@@ -406,6 +409,7 @@ mod tests {
             tags: vec![],
             position: Position::End,
             extra_blocks: vec![],
+            tier: None,
         })
         .is_mutation());
         assert!(CairnRequest::Reset.is_mutation());

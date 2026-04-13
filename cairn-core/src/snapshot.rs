@@ -60,7 +60,7 @@ async fn export_graph(db: &CairnDb) -> Result<serde_json::Value> {
     // Export topics
     let mut topic_res = db
         .db
-        .query("SELECT key, title, summary, blocks, tags, created_at, updated_at, deprecated, locked FROM topic")
+        .query("SELECT key, title, summary, blocks, tags, created_at, updated_at, deprecated, locked, tier FROM topic")
         .await
         .map_err(|e| CairnError::Db(e.to_string()))?;
     let topics: Vec<serde_json::Value> = topic_res
@@ -509,6 +509,7 @@ mod tests {
                 tags: vec!["test".into()],
                 position: Position::End,
                 extra_blocks: vec![],
+                tier: None,
             },
         )
         .await
@@ -525,6 +526,7 @@ mod tests {
                 tags: vec![],
                 position: Position::End,
                 extra_blocks: vec![],
+                tier: None,
             },
         )
         .await
@@ -586,6 +588,7 @@ mod tests {
                 tags: vec![],
                 position: Position::End,
                 extra_blocks: vec![],
+                tier: None,
             },
         )
         .await

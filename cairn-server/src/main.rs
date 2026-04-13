@@ -436,6 +436,10 @@ async fn dispatch(state: &mut DaemonState, conn_id: u64, req: CairnRequest) -> C
             .map(|(t, e)| serde_json::json!([t, e])),
         ListSnapshots => cairn.list_snapshots().map(|v| serde_json::json!(v)),
 
+        SetTier { key, tier } => cairn
+            .set_tier(&key, cairn_core::TopicTier::from_str_loose(&tier))
+            .await
+            .map(|_| serde_json::Value::Null),
         LockTopic { key } => cairn
             .lock_topic(&key)
             .await

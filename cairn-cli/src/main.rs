@@ -492,6 +492,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                                 tags: vec!["taxonomy".into()],
                                 position: Position::End,
                                 extra_blocks: vec![],
+                                tier: None,
                             })
                             .await?;
                         println!("  Created topic: {key}");
@@ -555,6 +556,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                     tags: tag,
                     position: parse_position(&position),
                     extra_blocks: vec![],
+                    tier: None,
                 })
                 .await?;
             output!(

@@ -55,6 +55,12 @@ pub enum Action {
     MoveBlockDown,
     /// Delete a block from the selected topic.
     DeleteBlock,
+    /// Set topic tier to atlas.
+    SetTierAtlas,
+    /// Set topic tier to journal.
+    SetTierJournal,
+    /// Set topic tier to notes.
+    SetTierNotes,
     /// Lock the selected topic (read-only for agents).
     LockTopic,
     /// Unlock the selected topic (make editable again).
@@ -1110,6 +1116,7 @@ pub async fn dispatch_text_save(
                     tags: vec![],
                     position: cairn_core::Position::End,
                     extra_blocks: vec![],
+                    tier: None,
                 })
                 .await
             {
@@ -1137,6 +1144,7 @@ pub async fn dispatch_text_save(
                         tags: vec![],
                         position: cairn_core::Position::End,
                         extra_blocks: vec![],
+                        tier: None,
                     })
                     .await
                 {

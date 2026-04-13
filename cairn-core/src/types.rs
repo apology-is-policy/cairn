@@ -11,6 +11,52 @@ fn bool_or_null<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
 
 // ── Core data types ──────────────────────────────────────────────
 
+/// Topic tier determines how a topic is treated during prime and search.
+/// Atlas is the default — authoritative codebase knowledge. Journal records
+/// task context, decisions, and outcomes. Notes are scratch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TopicTier {
+    Atlas,
+    Journal,
+    Notes,
+}
+
+impl TopicTier {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Atlas => "atlas",
+            Self::Journal => "journal",
+            Self::Notes => "notes",
+        }
+    }
+
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "journal" => Self::Journal,
+            "notes" | "note" | "scratch" => Self::Notes,
+            _ => Self::Atlas,
+        }
+    }
+}
+
+impl Default for TopicTier {
+    fn default() -> Self {
+        Self::Atlas
+    }
+}
+
+impl fmt::Display for TopicTier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+/// Deserialize a TopicTier that might be null (same pattern as bool_or_null).
+fn tier_or_null<'de, D: Deserializer<'de>>(d: D) -> Result<TopicTier, D::Error> {
+    Option::<TopicTier>::deserialize(d).map(|v| v.unwrap_or(TopicTier::Atlas))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Topic {
     pub key: String,
@@ -23,6 +69,8 @@ pub struct Topic {
     pub deprecated: bool,
     #[serde(default, deserialize_with = "bool_or_null")]
     pub locked: bool,
+    #[serde(default, deserialize_with = "tier_or_null")]
+    pub tier: TopicTier,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,11 +225,12 @@ pub struct LearnParams {
     pub tags: Vec<String>,
     pub position: Position,
     /// Additional blocks to append after the primary content block.
-    /// Enables creating multi-block topics in a single `learn` call.
-    /// Each block gets its own ID and optional voice annotation.
-    /// Backward-compatible: defaults to empty (single-block behavior).
     #[serde(default)]
     pub extra_blocks: Vec<NewBlock>,
+    /// Topic tier: "atlas" (default), "journal", or "notes".
+    /// Only used when creating a new topic — ignored on append.
+    #[serde(default)]
+    pub tier: Option<TopicTier>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -426,6 +475,8 @@ pub struct SearchResultItem {
     pub title: String,
     pub summary: String,
     pub score: f64,
+    #[serde(default)]
+    pub tier: TopicTier,
     pub neighbors: Vec<NeighborSummary>,
 }
 
@@ -670,6 +721,7 @@ mod tests {
             tags: vec!["a".into(), "b".into()],
             position: Position::After("b_1".into()),
             extra_blocks: vec![],
+            tier: None,
         });
     }
 

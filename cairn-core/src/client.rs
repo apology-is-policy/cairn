@@ -310,6 +310,14 @@ impl CairnClient {
         self.call(CairnRequest::BatchRewrite(params)).await
     }
 
+    pub async fn set_tier(&self, key: &str, tier: &str) -> Result<()> {
+        self.call(CairnRequest::SetTier {
+            key: key.to_string(),
+            tier: tier.to_string(),
+        })
+        .await
+    }
+
     pub async fn lock_topic(&self, key: &str) -> Result<()> {
         self.call(CairnRequest::LockTopic {
             key: key.to_string(),

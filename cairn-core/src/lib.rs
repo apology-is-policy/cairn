@@ -114,6 +114,10 @@ impl Cairn {
         ops::batch_rewrite(&self.db, params).await
     }
 
+    pub async fn set_tier(&self, key: &str, tier: TopicTier) -> Result<()> {
+        ops::set_tier(&self.db, key, tier).await
+    }
+
     pub async fn lock_topic(&self, key: &str) -> Result<()> {
         ops::lock_topic(&self.db, key).await
     }

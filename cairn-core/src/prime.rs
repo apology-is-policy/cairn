@@ -378,18 +378,30 @@ pub async fn prime(db: &CairnDb, params: PrimeParams) -> Result<PrimeResult> {
         results: all_search_items,
     };
 
-    // 3. Add matched topics (full content)
+    // 3. Add matched topics — tier-weighted.
+    //    Atlas: full blocks. Journal: summary only. Notes: excluded from prime.
     for item in &search_result.results {
         if token_count >= max_tokens {
             break;
         }
 
+        // Fetch full topic to check tier and locked status.
+        let topic = crate::ops::get_topic_by_key(db, &item.topic_key).await?;
+        let tier = topic.as_ref().map(|t| t.tier).unwrap_or(TopicTier::Atlas);
+
+        // Notes tier: excluded from prime entirely.
+        if tier == TopicTier::Notes {
+            continue;
+        }
+
         matched_topics.push(item.topic_key.clone());
 
-        // Fetch full topic for blocks
-        let topic = crate::ops::get_topic_by_key(db, &item.topic_key).await?;
-
-        let mut section = format!("## {}\n\n", item.title);
+        let tier_label = if tier != TopicTier::Atlas {
+            format!(" [{}]", tier.label())
+        } else {
+            String::new()
+        };
+        let mut section = format!("## {}{}\n\n", item.title, tier_label);
 
         // Flag locked topics so the agent knows not to modify them.
         if let Some(ref t) = topic {
@@ -403,6 +415,14 @@ pub async fn prime(db: &CairnDb, params: PrimeParams) -> Result<PrimeResult> {
             section.push('\n');
         }
 
+        // Journal tier: summary only, no blocks (saves tokens for atlas content).
+        if tier == TopicTier::Journal {
+            token_count += estimate_tokens(&section);
+            context_parts.push(section);
+            continue;
+        }
+
+        // Atlas tier: include full blocks.
         if let Some(topic) = &topic {
             for block in &topic.blocks {
                 let block_text = if let Some(voice) = &block.voice {
@@ -669,6 +689,7 @@ mod tests {
                 tags: vec![],
                 position: Position::End,
                 extra_blocks: vec![],
+                tier: None,
             },
         )
         .await
@@ -714,6 +735,7 @@ mod tests {
                 tags: vec![],
                 position: Position::End,
                 extra_blocks: vec![],
+                tier: None,
             },
         )
         .await
@@ -740,6 +762,7 @@ mod tests {
                 tags: vec![],
                 position: Position::End,
                 extra_blocks: vec![],
+                tier: None,
             },
         )
         .await

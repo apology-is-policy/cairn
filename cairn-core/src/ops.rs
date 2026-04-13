@@ -74,6 +74,8 @@ struct TopicRow {
     updated_at: chrono::DateTime<Utc>,
     deprecated: bool,
     locked: bool,
+    #[serde(default)]
+    tier: String,
 }
 
 impl TopicRow {
@@ -90,6 +92,7 @@ impl TopicRow {
             updated_at: self.updated_at,
             deprecated: self.deprecated,
             locked: self.locked,
+            tier: TopicTier::from_str_loose(&self.tier),
         })
     }
 }
@@ -97,7 +100,7 @@ impl TopicRow {
 async fn get_topic(db: &CairnDb, key: &str) -> Result<Option<Topic>> {
     let mut res = db
         .db
-        .query("SELECT key, title, summary, blocks, tags, created_at, updated_at, deprecated, locked FROM topic WHERE key = $key LIMIT 1")
+        .query("SELECT key, title, summary, blocks, tags, created_at, updated_at, deprecated, locked, tier FROM topic WHERE key = $key LIMIT 1")
         .bind(("key", key.to_string()))
         .await
         .map_err(|e| CairnError::Db(e.to_string()))?;
@@ -231,6 +234,7 @@ pub async fn learn(db: &CairnDb, params: LearnParams) -> Result<LearnResult> {
         let blocks_json =
             serde_json::to_string(&all_blocks).map_err(|e| CairnError::Db(e.to_string()))?;
 
+        let tier = params.tier.unwrap_or(TopicTier::Atlas);
         db.db
             .query(
                 "CREATE topic SET
@@ -239,6 +243,7 @@ pub async fn learn(db: &CairnDb, params: LearnParams) -> Result<LearnResult> {
                     summary = $summary,
                     blocks = $blocks,
                     tags = $tags,
+                    tier = $tier,
                     created_at = time::now(),
                     updated_at = time::now(),
                     deprecated = false",
@@ -248,6 +253,7 @@ pub async fn learn(db: &CairnDb, params: LearnParams) -> Result<LearnResult> {
             .bind(("summary", summary))
             .bind(("blocks", blocks_json))
             .bind(("tags", params.tags))
+            .bind(("tier", tier.label()))
             .await
             .map_err(|e| CairnError::Db(e.to_string()))?;
 
@@ -632,11 +638,52 @@ fn check_not_locked(topic: &Topic) -> Result<()> {
     }
 }
 
+/// Change a topic's tier (atlas/journal/notes).
+pub async fn set_tier(db: &CairnDb, topic_key: &str, tier: TopicTier) -> Result<()> {
+    let topic = get_topic(db, topic_key)
+        .await?
+        .ok_or_else(|| CairnError::TopicNotFound(topic_key.into()))?;
+
+    // If the topic is locked and being moved away from atlas, unlock it first.
+    if topic.locked && tier != TopicTier::Atlas {
+        db.db
+            .query("UPDATE topic SET locked = false WHERE key = $key")
+            .bind(("key", topic_key.to_string()))
+            .await
+            .map_err(|e| CairnError::Db(e.to_string()))?;
+    }
+
+    db.db
+        .query("UPDATE topic SET tier = $tier, updated_at = time::now() WHERE key = $key")
+        .bind(("tier", tier.label()))
+        .bind(("key", topic_key.to_string()))
+        .await
+        .map_err(|e| CairnError::Db(e.to_string()))?;
+
+    write_history(
+        db,
+        "set_tier",
+        &format!("topic:{topic_key}"),
+        &format!("tier changed to {tier}"),
+        None,
+    )
+    .await?;
+    Ok(())
+}
+
 /// Lock a topic — makes it read-only for content mutations.
 pub async fn lock_topic(db: &CairnDb, topic_key: &str) -> Result<()> {
     let _topic = get_topic(db, topic_key)
         .await?
         .ok_or_else(|| CairnError::TopicNotFound(topic_key.into()))?;
+
+    if _topic.tier != TopicTier::Atlas {
+        return Err(CairnError::Other(format!(
+            "Only atlas topics can be locked. '{}' is tier '{}'.",
+            topic_key,
+            _topic.tier.label()
+        )));
+    }
 
     db.db
         .query("UPDATE topic SET locked = true, updated_at = time::now() WHERE key = $key")
@@ -977,6 +1024,7 @@ mod tests {
                 tags: vec!["billing".into(), "retry".into()],
                 position: Position::End,
                 extra_blocks: vec![],
+                tier: None,
             },
         )
         .await
@@ -1007,6 +1055,7 @@ mod tests {
                 tags: vec![],
                 position: Position::End,
                 extra_blocks: vec![],
+                tier: None,
             },
         )
         .await
@@ -1023,6 +1072,7 @@ mod tests {
                 tags: vec!["new-tag".into()],
                 position: Position::End,
                 extra_blocks: vec![],
+                tier: None,
             },
         )
         .await
@@ -1053,6 +1103,7 @@ mod tests {
                 tags: vec![],
                 position: Position::End,
                 extra_blocks: vec![],
+                tier: None,
             },
         )
         .await
@@ -1069,6 +1120,7 @@ mod tests {
                 tags: vec![],
                 position: Position::Start,
                 extra_blocks: vec![],
+                tier: None,
             },
         )
         .await
@@ -1096,6 +1148,7 @@ mod tests {
                     tags: vec![],
                     position: Position::End,
                     extra_blocks: vec![],
+                    tier: None,
                 },
             )
             .await
@@ -1135,6 +1188,7 @@ mod tests {
                     tags: vec![],
                     position: Position::End,
                     extra_blocks: vec![],
+                    tier: None,
                 },
             )
             .await
@@ -1185,6 +1239,7 @@ mod tests {
                 tags: vec![],
                 position: Position::End,
                 extra_blocks: vec![],
+                tier: None,
             },
         )
         .await
@@ -1221,6 +1276,7 @@ mod tests {
                 tags: vec![],
                 position: Position::End,
                 extra_blocks: vec![],
+                tier: None,
             },
         )
         .await
@@ -1259,6 +1315,7 @@ mod tests {
                 tags: vec![],
                 position: Position::End,
                 extra_blocks: vec![],
+                tier: None,
             },
         )
         .await
@@ -1295,6 +1352,7 @@ mod tests {
                 tags: vec![],
                 position: Position::End,
                 extra_blocks: vec![],
+                tier: None,
             },
         )
         .await
@@ -1311,6 +1369,7 @@ mod tests {
                 tags: vec![],
                 position: Position::End,
                 extra_blocks: vec![],
+                tier: None,
             },
         )
         .await
@@ -1353,6 +1412,7 @@ mod tests {
                 tags: vec![],
                 position: Position::End,
                 extra_blocks: vec![],
+                tier: None,
             },
         )
         .await
@@ -1406,6 +1466,7 @@ mod tests {
                 tags: vec![],
                 position: Position::End,
                 extra_blocks: vec![],
+                tier: None,
             },
         )
         .await
@@ -1425,6 +1486,7 @@ mod tests {
                 tags: vec![],
                 position: Position::End,
                 extra_blocks: vec![],
+                tier: None,
             },
         )
         .await
@@ -1448,6 +1510,7 @@ mod tests {
                 tags: vec![],
                 position: Position::End,
                 extra_blocks: vec![],
+                tier: None,
             },
         )
         .await
@@ -1473,6 +1536,7 @@ mod tests {
                 tags: vec![],
                 position: Position::End,
                 extra_blocks: vec![],
+                tier: None,
             },
         )
         .await
@@ -1497,6 +1561,7 @@ mod tests {
                 tags: vec![],
                 position: Position::End,
                 extra_blocks: vec![],
+                tier: None,
             },
         )
         .await
@@ -1514,6 +1579,7 @@ mod tests {
                 tags: vec![],
                 position: Position::End,
                 extra_blocks: vec![],
+                tier: None,
             },
         )
         .await
@@ -1538,6 +1604,7 @@ mod tests {
                 tags: vec![],
                 position: Position::End,
                 extra_blocks: vec![],
+                tier: None,
             },
         )
         .await
@@ -1555,6 +1622,7 @@ mod tests {
                 tags: vec![],
                 position: Position::End,
                 extra_blocks: vec![],
+                tier: None,
             },
         )
         .await
@@ -1579,6 +1647,7 @@ mod tests {
                 tags: vec![],
                 position: Position::End,
                 extra_blocks: vec![],
+                tier: None,
             },
         )
         .await
@@ -1638,6 +1707,7 @@ mod tests {
                     tags: vec![],
                     position: Position::End,
                     extra_blocks: vec![],
+                    tier: None,
                 },
             )
             .await
@@ -1673,6 +1743,7 @@ mod tests {
                     tags: vec![],
                     position: Position::End,
                     extra_blocks: vec![],
+                    tier: None,
                 },
             )
             .await
@@ -1747,6 +1818,7 @@ mod tests {
                         voice: None,
                     },
                 ],
+                tier: None,
             },
         )
         .await
@@ -1781,6 +1853,7 @@ mod tests {
                 tags: vec![],
                 position: Position::End,
                 extra_blocks: vec![],
+                tier: None,
             },
         )
         .await
@@ -1807,6 +1880,7 @@ mod tests {
                         voice: None,
                     },
                 ],
+                tier: None,
             },
         )
         .await
@@ -1839,6 +1913,7 @@ mod tests {
                 tags: vec![],
                 position: Position::End,
                 extra_blocks: vec![],
+                tier: None,
             },
         )
         .await
@@ -1868,6 +1943,7 @@ mod tests {
                     tags: vec![],
                     position: Position::End,
                     extra_blocks: vec![],
+                    tier: None,
                 },
             )
             .await
@@ -1955,6 +2031,7 @@ mod tests {
                 tags: vec![],
                 position: Position::End,
                 extra_blocks: vec![],
+                tier: None,
             },
         )
         .await
@@ -2012,6 +2089,7 @@ mod tests {
                 tags: vec![],
                 position: Position::End,
                 extra_blocks: vec![],
+                tier: None,
             },
         )
         .await
@@ -2031,6 +2109,7 @@ mod tests {
                 tags: vec![],
                 position: Position::End,
                 extra_blocks: vec![],
+                tier: None,
             },
         )
         .await
@@ -2057,6 +2136,7 @@ mod tests {
                 tags: vec![],
                 position: Position::End,
                 extra_blocks: vec![],
+                tier: None,
             },
         )
         .await
@@ -2112,6 +2192,7 @@ mod tests {
                 tags: vec![],
                 position: Position::End,
                 extra_blocks: vec![],
+                tier: None,
             },
         )
         .await
@@ -2127,6 +2208,7 @@ mod tests {
                 tags: vec![],
                 position: Position::End,
                 extra_blocks: vec![],
+                tier: None,
             },
         )
         .await
@@ -2174,6 +2256,7 @@ mod tests {
                 tags: vec![],
                 position: Position::End,
                 extra_blocks: vec![],
+                tier: None,
             },
         )
         .await
@@ -2193,6 +2276,7 @@ mod tests {
                 tags: vec![],
                 position: Position::End,
                 extra_blocks: vec![],
+                tier: None,
             },
         )
         .await
@@ -2212,6 +2296,7 @@ mod tests {
                 tags: vec![],
                 position: Position::End,
                 extra_blocks: vec![],
+                tier: None,
             },
         )
         .await

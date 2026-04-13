@@ -279,11 +279,18 @@ pub async fn search(db: &CairnDb, params: SearchParams) -> Result<SearchResult> 
             vec![]
         };
 
+        // Fetch tier from the topic (if it exists).
+        let tier = crate::ops::get_topic_by_key(db, &row.key)
+            .await?
+            .map(|t| t.tier)
+            .unwrap_or(TopicTier::Atlas);
+
         results.push(SearchResultItem {
             topic_key: row.key.clone(),
             title: row.title.clone(),
             summary: row.summary.clone(),
             score: row.score,
+            tier,
             neighbors,
         });
     }
@@ -768,6 +775,7 @@ mod tests {
                     tags: vec![],
                     position: Position::End,
                     extra_blocks: vec![],
+                    tier: None,
                 },
             )
             .await
@@ -964,6 +972,7 @@ mod tests {
                 tags: vec![],
                 position: Position::End,
                 extra_blocks: vec![],
+                tier: None,
             },
         )
         .await

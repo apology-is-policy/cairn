@@ -9,7 +9,7 @@ const SCHEMA: &str = include_str!("schema.surql");
 
 /// The schema version this binary knows how to handle.
 /// Bump when adding migrations.
-pub const CURRENT_SCHEMA_VERSION: i64 = 3;
+pub const CURRENT_SCHEMA_VERSION: i64 = 4;
 
 pub struct CairnDb {
     pub(crate) db: Surreal<Db>,
@@ -95,6 +95,21 @@ impl CairnDb {
                 .await
                 .map_err(|e| CairnError::Db(format!("v3 migration failed: {e}")))?;
             self.set_schema_version(3).await?;
+        }
+
+        if db_version < 4 {
+            // v4: Add `tier` field to topic table.
+            // Default "atlas" for all existing topics. Backfill unconditionally
+            // (learned from v2 locked migration — DEFINE FIELD DEFAULT doesn't
+            // backfill existing records).
+            self.db
+                .query(
+                    "DEFINE FIELD tier ON topic TYPE string DEFAULT 'atlas';
+                     UPDATE topic SET tier = 'atlas';",
+                )
+                .await
+                .map_err(|e| CairnError::Db(format!("v4 migration failed: {e}")))?;
+            self.set_schema_version(4).await?;
         }
 
         Ok(())

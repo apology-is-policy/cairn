@@ -985,6 +985,18 @@ pub fn detail_lines(
             Style::default().add_modifier(Modifier::BOLD),
         ),
     ];
+    if t.tier != cairn_core::TopicTier::Atlas {
+        let tier_color = match t.tier {
+            cairn_core::TopicTier::Journal => Color::Blue,
+            cairn_core::TopicTier::Notes => Color::DarkGray,
+            cairn_core::TopicTier::Atlas => Color::White,
+        };
+        header_spans.push(Span::raw("  "));
+        header_spans.push(Span::styled(
+            format!("[{}]", t.tier.label()),
+            Style::default().fg(tier_color),
+        ));
+    }
     if t.locked {
         header_spans.push(Span::raw("  "));
         header_spans.push(Span::styled(

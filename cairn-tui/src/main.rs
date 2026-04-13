@@ -403,6 +403,28 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                     notify_err(app, "Select a topic first".into());
                 }
             }
+            Action::SetTierAtlas | Action::SetTierJournal | Action::SetTierNotes => {
+                if require_edit_mode(app, action) {
+                    // Will re-dispatch after lock acquired.
+                } else if let Some(key) = app.selected_key() {
+                    let tier_str = match action {
+                        Action::SetTierAtlas => "atlas",
+                        Action::SetTierJournal => "journal",
+                        Action::SetTierNotes => "notes",
+                        _ => unreachable!(),
+                    };
+                    match client.set_tier(&key, tier_str).await {
+                        Ok(()) => {
+                            notify_ok(app, format!("Set '{}' tier to {}", key, tier_str));
+                            app.caches = TopicCaches::default();
+                            app.fetch_active_tab(client).await;
+                        }
+                        Err(e) => notify_err(app, format!("Set tier failed: {e}")),
+                    }
+                } else {
+                    notify_err(app, "Select a topic first".into());
+                }
+            }
             Action::LockTopic => {
                 if require_edit_mode(app, action) {
                     // Will re-dispatch after lock acquired.
