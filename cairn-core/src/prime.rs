@@ -479,8 +479,12 @@ pub async fn prime(db: &CairnDb, params: PrimeParams) -> Result<PrimeResult> {
 
     if matched_topics.is_empty() && !keywords.is_empty() {
         notes.push(
-            "No existing topics matched your task. This is likely a new area — \
-             create a topic for it as you work so future sessions have context."
+            "DISCOVERY AREA: No existing topics matched your task. The graph has \
+             no knowledge of this territory. Before completing this task, ask the \
+             user: \"I discovered knowledge about [area] that isn't in the graph. \
+             Should I catalogue it for future sessions?\" If they say yes, `learn` \
+             what you found. If they decline, move on — not every investigation \
+             needs to be persisted."
                 .into(),
         );
     }

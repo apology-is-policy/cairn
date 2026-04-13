@@ -7,10 +7,10 @@ ALWAYS:
 - Call `search` before making architectural recommendations, to check for
   prior context or decisions stored in the graph.
 - When `prime` returns no matches for your task, you are entering a
-  DISCOVERY AREA — the graph has no knowledge of this territory. Plan to
-  `learn` what you discover before the task ends. This is the highest-value
-  moment for the graph: you're about to build understanding that no future
-  agent will have unless you record it.
+  DISCOVERY AREA — the graph has no knowledge of this territory. Before
+  completing the task, ask the user whether the knowledge you discovered
+  should be catalogued. Not every investigation needs to be persisted, but
+  the user should make that call — don't silently skip it.
 
 CATALOGUE THE CODEBASE:
 As you work through code, create and maintain topics that describe the logical
@@ -100,8 +100,8 @@ Before reporting a task as done to the user, run this 10-second self-check:
 1. Did I discover how something works that isn't in the graph? → `learn` it.
 2. Did I find a relationship between areas? → `connect` them.
 3. Did I find something wrong or outdated in the graph? → `amend` it.
-4. Did `prime` return nothing at the start? → I'm in a discovery area and
-   MUST have something to record by now.
+4. Did `prime` return nothing at the start? → I'm in a discovery area.
+   Ask the user if the knowledge should be catalogued before closing.
 If all four are "no," you're done. If any is "yes," record it before
 responding. This check is mandatory, not aspirational.
 
