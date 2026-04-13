@@ -1657,4 +1657,278 @@ mod tests {
             .iter()
             .any(|e| e.from == "renamed-src" && e.to == "dst"));
     }
+
+    // ── Multi-block learn tests ──────────────────────────────────
+
+    #[tokio::test]
+    async fn test_learn_create_with_extra_blocks() {
+        let db = test_db().await;
+        let result = learn(
+            &db,
+            LearnParams {
+                topic_key: "multi".into(),
+                title: Some("Multi-block topic".into()),
+                summary: None,
+                content: "First block content".into(),
+                voice: Some("intro".into()),
+                tags: vec!["test".into()],
+                position: Position::End,
+                extra_blocks: vec![
+                    NewBlock {
+                        content: "Second block content".into(),
+                        voice: Some("detail".into()),
+                    },
+                    NewBlock {
+                        content: "Third block content".into(),
+                        voice: None,
+                    },
+                ],
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.action, "created");
+        assert_eq!(result.topic_block_count, 3);
+
+        let topic = get_topic(&db, "multi").await.unwrap().unwrap();
+        assert_eq!(topic.blocks.len(), 3);
+        assert_eq!(topic.blocks[0].content, "First block content");
+        assert_eq!(topic.blocks[0].voice.as_deref(), Some("intro"));
+        assert_eq!(topic.blocks[1].content, "Second block content");
+        assert_eq!(topic.blocks[1].voice.as_deref(), Some("detail"));
+        assert_eq!(topic.blocks[2].content, "Third block content");
+        assert_eq!(topic.blocks[2].voice, None);
+    }
+
+    #[tokio::test]
+    async fn test_learn_append_with_extra_blocks() {
+        let db = test_db().await;
+
+        // Create topic with one block.
+        learn(
+            &db,
+            LearnParams {
+                topic_key: "existing".into(),
+                title: Some("Existing".into()),
+                summary: None,
+                content: "Original block".into(),
+                voice: None,
+                tags: vec![],
+                position: Position::End,
+                extra_blocks: vec![],
+            },
+        )
+        .await
+        .unwrap();
+
+        // Append primary + 2 extra blocks.
+        let result = learn(
+            &db,
+            LearnParams {
+                topic_key: "existing".into(),
+                title: None,
+                summary: None,
+                content: "Appended primary".into(),
+                voice: None,
+                tags: vec![],
+                position: Position::End,
+                extra_blocks: vec![
+                    NewBlock {
+                        content: "Appended extra 1".into(),
+                        voice: None,
+                    },
+                    NewBlock {
+                        content: "Appended extra 2".into(),
+                        voice: None,
+                    },
+                ],
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.action, "appended");
+        assert_eq!(result.topic_block_count, 4); // 1 original + 3 new
+
+        let topic = get_topic(&db, "existing").await.unwrap().unwrap();
+        assert_eq!(topic.blocks.len(), 4);
+        assert_eq!(topic.blocks[0].content, "Original block");
+        assert_eq!(topic.blocks[1].content, "Appended primary");
+        assert_eq!(topic.blocks[2].content, "Appended extra 1");
+        assert_eq!(topic.blocks[3].content, "Appended extra 2");
+    }
+
+    #[tokio::test]
+    async fn test_learn_extra_blocks_empty_is_backward_compatible() {
+        // Verify that extra_blocks: vec![] behaves exactly like the
+        // old single-block learn.
+        let db = test_db().await;
+        let result = learn(
+            &db,
+            LearnParams {
+                topic_key: "compat".into(),
+                title: Some("Compat".into()),
+                summary: None,
+                content: "Single block".into(),
+                voice: None,
+                tags: vec![],
+                position: Position::End,
+                extra_blocks: vec![],
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.topic_block_count, 1);
+        let topic = get_topic(&db, "compat").await.unwrap().unwrap();
+        assert_eq!(topic.blocks.len(), 1);
+    }
+
+    // ── Batch rewrite tests ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_batch_rewrite_multiple_topics() {
+        let db = test_db().await;
+
+        // Create 3 topics.
+        for key in &["batch-a", "batch-b", "batch-c"] {
+            learn(
+                &db,
+                LearnParams {
+                    topic_key: key.to_string(),
+                    title: Some(key.to_string()),
+                    summary: None,
+                    content: format!("old content for {key}"),
+                    voice: None,
+                    tags: vec![],
+                    position: Position::End,
+                    extra_blocks: vec![],
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        // Batch rewrite all 3.
+        let result = batch_rewrite(
+            &db,
+            BatchRewriteParams {
+                entries: vec![
+                    BatchRewriteEntry {
+                        topic_key: "batch-a".into(),
+                        new_blocks: vec![
+                            NewBlock {
+                                content: "new A block 1".into(),
+                                voice: None,
+                            },
+                            NewBlock {
+                                content: "new A block 2".into(),
+                                voice: None,
+                            },
+                        ],
+                        reason: "refresh A".into(),
+                    },
+                    BatchRewriteEntry {
+                        topic_key: "batch-b".into(),
+                        new_blocks: vec![NewBlock {
+                            content: "new B single".into(),
+                            voice: None,
+                        }],
+                        reason: "refresh B".into(),
+                    },
+                    BatchRewriteEntry {
+                        topic_key: "batch-c".into(),
+                        new_blocks: vec![
+                            NewBlock {
+                                content: "new C 1".into(),
+                                voice: None,
+                            },
+                            NewBlock {
+                                content: "new C 2".into(),
+                                voice: None,
+                            },
+                            NewBlock {
+                                content: "new C 3".into(),
+                                voice: None,
+                            },
+                        ],
+                        reason: "refresh C".into(),
+                    },
+                ],
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.total, 3);
+        assert_eq!(result.succeeded, 3);
+
+        let a = get_topic(&db, "batch-a").await.unwrap().unwrap();
+        assert_eq!(a.blocks.len(), 2);
+        assert_eq!(a.blocks[0].content, "new A block 1");
+
+        let b = get_topic(&db, "batch-b").await.unwrap().unwrap();
+        assert_eq!(b.blocks.len(), 1);
+
+        let c = get_topic(&db, "batch-c").await.unwrap().unwrap();
+        assert_eq!(c.blocks.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_batch_rewrite_partial_failure() {
+        let db = test_db().await;
+
+        // Create one topic, leave the other missing.
+        learn(
+            &db,
+            LearnParams {
+                topic_key: "exists".into(),
+                title: Some("Exists".into()),
+                summary: None,
+                content: "old".into(),
+                voice: None,
+                tags: vec![],
+                position: Position::End,
+                extra_blocks: vec![],
+            },
+        )
+        .await
+        .unwrap();
+
+        let result = batch_rewrite(
+            &db,
+            BatchRewriteParams {
+                entries: vec![
+                    BatchRewriteEntry {
+                        topic_key: "exists".into(),
+                        new_blocks: vec![NewBlock {
+                            content: "new".into(),
+                            voice: None,
+                        }],
+                        reason: "update".into(),
+                    },
+                    BatchRewriteEntry {
+                        topic_key: "missing".into(),
+                        new_blocks: vec![NewBlock {
+                            content: "won't work".into(),
+                            voice: None,
+                        }],
+                        reason: "should fail".into(),
+                    },
+                ],
+            },
+        )
+        .await
+        .unwrap();
+
+        // Batch completes — one success, one failure.
+        assert_eq!(result.total, 2);
+        assert_eq!(result.succeeded, 1);
+        assert!(result.results[1].action.starts_with("error"));
+
+        // The successful one still landed.
+        let topic = get_topic(&db, "exists").await.unwrap().unwrap();
+        assert_eq!(topic.blocks[0].content, "new");
+    }
 }
