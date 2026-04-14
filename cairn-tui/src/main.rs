@@ -416,8 +416,7 @@ async fn run_app(terminal: &mut Term, client: &CairnClient, app: &mut App) -> an
                     match client.set_tier(&key, tier_str).await {
                         Ok(()) => {
                             notify_ok(app, format!("Set '{}' tier to {}", key, tier_str));
-                            app.caches = TopicCaches::default();
-                            app.fetch_active_tab(client).await;
+                            app.refresh(client).await;
                         }
                         Err(e) => notify_err(app, format!("Set tier failed: {e}")),
                     }
