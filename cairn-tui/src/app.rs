@@ -128,7 +128,17 @@ pub struct App {
 
 impl App {
     pub fn new(status: GraphStatusResult, mut topics: Vec<NodeSummary>) -> Self {
-        topics.sort_by(|a, b| a.key.cmp(&b.key));
+        // Sort by tier (atlas < journal < notes), then by key.
+        topics.sort_by(|a, b| {
+            let tier_ord = |t: &cairn_core::TopicTier| match t {
+                cairn_core::TopicTier::Atlas => 0,
+                cairn_core::TopicTier::Journal => 1,
+                cairn_core::TopicTier::Notes => 2,
+            };
+            tier_ord(&a.tier)
+                .cmp(&tier_ord(&b.tier))
+                .then(a.key.cmp(&b.key))
+        });
         let visible: Vec<usize> = (0..topics.len()).collect();
         let by_key = topics
             .iter()
@@ -258,7 +268,16 @@ impl App {
                 self.status = status;
                 let selected_key = self.selected_key();
                 let mut topics = view.topics;
-                topics.sort_by(|a, b| a.key.cmp(&b.key));
+                topics.sort_by(|a, b| {
+                    let tier_ord = |t: &cairn_core::TopicTier| match t {
+                        cairn_core::TopicTier::Atlas => 0,
+                        cairn_core::TopicTier::Journal => 1,
+                        cairn_core::TopicTier::Notes => 2,
+                    };
+                    tier_ord(&a.tier)
+                        .cmp(&tier_ord(&b.tier))
+                        .then(a.key.cmp(&b.key))
+                });
                 self.by_key = topics
                     .iter()
                     .enumerate()

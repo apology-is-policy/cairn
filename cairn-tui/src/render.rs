@@ -772,8 +772,14 @@ pub fn draw_topic_list(f: &mut Frame, area: Rect, app: &App) {
         .iter()
         .filter_map(|i| app.all_topics.get(*i))
         .map(|t| {
+            let (marker, key_color) = match t.tier {
+                cairn_core::TopicTier::Atlas => ("", Color::Cyan),
+                cairn_core::TopicTier::Journal => ("J ", Color::Blue),
+                cairn_core::TopicTier::Notes => ("N ", Color::DarkGray),
+            };
             ListItem::new(Line::from(vec![
-                Span::styled(&t.key, Style::default().fg(Color::Cyan)),
+                Span::styled(marker, Style::default().fg(key_color)),
+                Span::styled(&t.key, Style::default().fg(key_color)),
                 Span::raw("  "),
                 Span::styled(&t.title, Style::default().fg(Color::DarkGray)),
             ]))

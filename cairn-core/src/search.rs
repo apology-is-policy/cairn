@@ -355,6 +355,7 @@ pub async fn explore(db: &CairnDb, params: ExploreParams) -> Result<ExploreResul
             key: s.key,
             title: s.title,
             summary: s.summary,
+            tier: TopicTier::Atlas, // explore doesn't need tier precision
         })
         .collect();
 
@@ -505,10 +506,21 @@ pub async fn nearby(db: &CairnDb, params: NearbyParams) -> Result<NearbyResult> 
 pub async fn graph_view(db: &CairnDb) -> Result<GraphViewResult> {
     let mut res = db
         .db
-        .query("SELECT key, title, summary FROM topic WHERE deprecated = false ORDER BY key ASC")
+        .query(
+            "SELECT key, title, summary, tier FROM topic WHERE deprecated = false ORDER BY key ASC",
+        )
         .await
         .map_err(|e| CairnError::Db(e.to_string()))?;
-    let rows: Vec<TopicSummaryRow> = res.take(0).map_err(|e| CairnError::Db(e.to_string()))?;
+
+    #[derive(Debug, Deserialize)]
+    struct NodeRow {
+        key: String,
+        title: String,
+        summary: String,
+        #[serde(default)]
+        tier: Option<String>,
+    }
+    let rows: Vec<NodeRow> = res.take(0).map_err(|e| CairnError::Db(e.to_string()))?;
 
     let topics: Vec<NodeSummary> = rows
         .into_iter()
@@ -516,6 +528,10 @@ pub async fn graph_view(db: &CairnDb) -> Result<GraphViewResult> {
             key: r.key,
             title: r.title,
             summary: r.summary,
+            tier: r
+                .tier
+                .map(|s| TopicTier::from_str_loose(&s))
+                .unwrap_or(TopicTier::Atlas),
         })
         .collect();
 

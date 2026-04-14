@@ -105,6 +105,25 @@ Before reporting a task as done to the user, run this 10-second self-check:
 If all four are "no," you're done. If any is "yes," record it before
 responding. This check is mandatory, not aspirational.
 
+TOPIC TIERS:
+Topics have a tier that controls their weight in prime and search:
+- **atlas** (default) — authoritative codebase knowledge. Describes what
+  a module IS, how it works, why it's built that way. Full blocks included
+  in prime. Use for: module descriptions, architecture, API contracts,
+  configuration guides, gotchas.
+- **journal** — task records, decisions, and outcomes. Describes what
+  HAPPENED. Summary-only in prime (saves tokens for atlas). Use for: task
+  plans, PR context, rollout decisions, incident post-mortems, temporary
+  changes with intent to revert.
+- **notes** — scratch, hypotheses, investigation logs. Excluded from prime
+  entirely, only appears in explicit search. Use for: "I think X might be
+  causing Y", debugging notes, questions to investigate later.
+
+When creating a topic with `learn`, pass `tier: "journal"` or `tier: "notes"`
+to set it. Default is atlas. When recording task context (plans, decisions,
+what you did and why), use journal. When jotting a quick hypothesis or
+scratch note, use notes. When cataloguing codebase structure, use atlas.
+
 BLOCK GRANULARITY:
 - A block should be one coherent idea — typically 1-5 paragraphs.
 - If a block exceeds ~500 words, consider splitting into multiple blocks with

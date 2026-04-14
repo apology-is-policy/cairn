@@ -505,6 +505,8 @@ pub struct NodeSummary {
     pub key: String,
     pub title: String,
     pub summary: String,
+    #[serde(default)]
+    pub tier: TopicTier,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
