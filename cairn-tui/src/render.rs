@@ -767,24 +767,46 @@ pub fn draw_body(f: &mut Frame, area: Rect, app: &App) {
 }
 
 pub fn draw_topic_list(f: &mut Frame, area: Rect, app: &App) {
-    let items: Vec<ListItem> = app
-        .visible
-        .iter()
-        .filter_map(|i| app.all_topics.get(*i))
-        .map(|t| {
-            let (marker, key_color) = match t.tier {
-                cairn_core::TopicTier::Atlas => ("", Color::Cyan),
-                cairn_core::TopicTier::Journal => ("J ", Color::Blue),
-                cairn_core::TopicTier::Notes => ("N ", Color::DarkGray),
+    let mut items: Vec<ListItem> = Vec::new();
+    let mut last_tier: Option<cairn_core::TopicTier> = None;
+    for idx in &app.visible {
+        let Some(t) = app.all_topics.get(*idx) else {
+            continue;
+        };
+        let (marker, key_color) = match t.tier {
+            cairn_core::TopicTier::Atlas => ("", Color::Cyan),
+            cairn_core::TopicTier::Journal => ("J ", Color::Blue),
+            cairn_core::TopicTier::Notes => ("N ", Color::DarkGray),
+        };
+        // When the tier changes, prepend a separator line to this item.
+        let needs_separator = last_tier.is_some() && last_tier != Some(t.tier);
+        last_tier = Some(t.tier);
+
+        let topic_line = Line::from(vec![
+            Span::styled(marker, Style::default().fg(key_color)),
+            Span::styled(&t.key, Style::default().fg(key_color)),
+            Span::raw("  "),
+            Span::styled(&t.title, Style::default().fg(Color::DarkGray)),
+        ]);
+
+        if needs_separator {
+            let (label, color) = match t.tier {
+                cairn_core::TopicTier::Atlas => ("── atlas ──", Color::Cyan),
+                cairn_core::TopicTier::Journal => ("── journal ──", Color::Blue),
+                cairn_core::TopicTier::Notes => ("── notes ──", Color::DarkGray),
             };
-            ListItem::new(Line::from(vec![
-                Span::styled(marker, Style::default().fg(key_color)),
-                Span::styled(&t.key, Style::default().fg(key_color)),
-                Span::raw("  "),
-                Span::styled(&t.title, Style::default().fg(Color::DarkGray)),
-            ]))
-        })
-        .collect();
+            // Two-line item: separator rule + topic. Keeps ListState in sync.
+            items.push(ListItem::new(vec![
+                Line::from(Span::styled(
+                    label,
+                    Style::default().fg(color).add_modifier(Modifier::DIM),
+                )),
+                topic_line,
+            ]));
+        } else {
+            items.push(ListItem::new(topic_line));
+        }
+    }
 
     let title = match app.mode {
         Mode::Filter => format!(" topics  /{}_ ", app.filter),
